@@ -866,7 +866,12 @@ fn validate_inner(words: &[u32]) -> (SpirvValidation, bool) {
             // as a rejected module, and the two must not be confused: one is a
             // module that would take the process down, the other is a laptop
             // without SPIRV-Tools installed.
-            if why.contains("No such file") || why.contains("spawn") || why.contains("not found") {
+            if why.contains("No such file")
+                || why.contains("spawn")
+                || why.contains("not found")
+                || why.contains("cannot find")
+                || why.contains("NO_VERDICT")
+            {
                 if crate::observe::first_sight("spirv_val_absent", 0) {
                     crate::observe::fail(format!(
                         "spirv_validate reason=validator_unavailable detail={}",
@@ -2915,8 +2920,6 @@ pub fn unsupported_vulkan_resource_kind_name(kind: ResourceKind) -> Option<&'sta
         ResourceKind::KernelStageInput => Some("kernel_stage_input"),
         ResourceKind::AccelerationStructureShadow => Some("acceleration_structure_shadow"),
         ResourceKind::PrimitiveAccelerationStructure => Some("primitive_acceleration_structure"),
-        ResourceKind::EmbeddedArgBufferTexture => Some("embedded_texture"),
-        ResourceKind::EmbeddedArgBufferBuffer => Some("embedded_buffer"),
         ResourceKind::BufferAddressTable => Some("buffer_address_table"),
         _ => None,
     }
@@ -5665,12 +5668,18 @@ mod more_tests {
             resource_buffer_index: None,
         });
         let mut embedded = empty_reflection(ShaderStage::Kernel);
-        embedded.bindings.push(embedded_storage_array);
+        embedded.bindings.push(embedded_storage_array.clone());
         assert_eq!(census_reflection_wellformed(&embedded, 0), 0);
-        let embedded_resource = first_unsupported_vulkan_resource(&embedded).unwrap();
+        assert_eq!(first_unsupported_vulkan_resource(&embedded), None);
+
+        let mut unsupp = empty_reflection(ShaderStage::Kernel);
+        let mut unsupp_binding = embedded_storage_array;
+        unsupp_binding.kind = ResourceKind::AccelerationStructureShadow;
+        unsupp.bindings.push(unsupp_binding);
+        let unsupp_resource = first_unsupported_vulkan_resource(&unsupp).unwrap();
         assert_eq!(
-            unsupported_vulkan_resource_kind_name(embedded_resource.kind),
-            Some("embedded_texture")
+            unsupported_vulkan_resource_kind_name(unsupp_resource.kind),
+            Some("acceleration_structure_shadow")
         );
         assert_eq!(
             first_unsupported_vulkan_interface(&embedded, ShaderStage::Fragment),

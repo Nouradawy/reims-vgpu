@@ -13724,9 +13724,9 @@ pub(super) fn try_metal2vulkan_draw_with<M: HostMemory + HostOps>(
         // These bindings have no Metal argument-table slot: reflection names
         // descriptors the translator retained for explicit null texture handles.
         // Use the same relocation as the corresponding executable variant.
-        for (reflection, relocated, stage) in [
-            (&*v_shader.reflection, false, "vertex"),
-            (&*f_shader.reflection, separate_sampled, "fragment"),
+        for (reflection, relocated, stage, bufs) in [
+            (&*v_shader.reflection, false, "vertex", &req.vertex_buffers[..]),
+            (&*f_shader.reflection, separate_sampled, "fragment", &req.fragment_buffers[..]),
         ] {
             let before = images.len();
             super::synthesized_sampled::append_null_textures(reflection, relocated, &mut images)
@@ -13736,6 +13736,21 @@ pub(super) fn try_metal2vulkan_draw_with<M: HostMemory + HostOps>(
                         reason,
                     })
                 })?;
+            super::synthesized_sampled::append_embedded_arg_buffer_textures(
+                acc.shared(),
+                host,
+                req.task_id,
+                bufs,
+                reflection,
+                relocated,
+                &mut images,
+            )
+            .map_err(|reason| {
+                DrawError::DrawPreparation(DrawPreparationDecline::SynthesizedSampled {
+                    stage,
+                    reason,
+                })
+            })?;
             for image in &images[before..] {
                 let key = (u64::from(req.pipeline_ref) << 32)
                     | (u64::from(image.binding) << 1)
@@ -20943,15 +20958,196 @@ mod vulkan_split_tests {
 /// already decodes an ICB's command memory for the Metal arm, so the missing
 /// half is replaying those decoded commands as draws through the Vulkan
 /// engine rather than a second decoder.
+/// Executes guest indirect command buffer commands by decoding the command memory
+/// and replaying the draws through the Vulkan engine pipeline.
 pub fn encode_icb_execute_and_writeback<M: HostMemory + HostOps>(
-    _state: &mut DeviceState,
-    _host: &mut M,
-    _req: &DrawEncodeRequest,
-    _icb_ref: u32,
-    _range_location: u64,
-    _range_length: u64,
+    state: &mut DeviceState,
+    host: &mut M,
+    req: &DrawEncodeRequest,
+    icb_ref: u32,
+    range_location: u64,
+    range_length: u64,
 ) -> EncodeStatus {
-    EncodeStatus::NoMetal("icb_exec_no_metal_build")
+    use crate::observe::Decline;
+    use crate::runtime::icb::{
+        decode_icb_command_range, IcbCommandFill, IcbRenderBindStage, IcbRenderDraw, IcbStatus,
+        ICB_FILL_NO_COMMAND_MEMORY,
+    };
+    use reims_vgpu_protocol::pass_action::MTL_LOAD_ACTION_LOAD;
+
+    if icb_ref == 0 {
+        return EncodeStatus::BadArgs("icb_exec_ref_zero");
+    }
+    let color_list = &req.colors;
+    if color_list.is_empty() {
+        return EncodeStatus::BadArgs("icb_exec_no_color_target");
+    }
+    let width = color_list[0].width;
+    let height = color_list[0].height;
+    if width == 0
+        || height == 0
+        || color_list.iter().any(|c| {
+            c.width != width || c.height != height || (c.mapping_id == 0 && c.target_gva == 0)
+        })
+    {
+        return EncodeStatus::BadArgs("icb_exec_geom_mismatch");
+    }
+
+    if range_length == 0 {
+        return EncodeStatus::Ok;
+    }
+
+    let fills = match decode_icb_command_range(
+        state,
+        host,
+        req.task_id,
+        icb_ref,
+        range_location,
+        range_length,
+    ) {
+        Ok(f) => f,
+        Err(IcbStatus::Missing(slug)) if slug == ICB_FILL_NO_COMMAND_MEMORY => {
+            crate::runtime::drain::note_store_route("icb_executed_without_command_memory");
+            Vec::new()
+        }
+        Err(e) => {
+            let slug = e.slug();
+            return match e {
+                IcbStatus::Missing(_) => EncodeStatus::BadArgs(slug),
+                IcbStatus::NoMetal(_) => EncodeStatus::NoMetal(slug),
+                IcbStatus::Args(_) | IcbStatus::BadDescriptor(_) | IcbStatus::MetalFailed(_) => {
+                    EncodeStatus::MetalFailed(slug)
+                }
+                IcbStatus::Unsupported(_) => EncodeStatus::Unsupported(slug),
+            };
+        }
+    };
+
+    let render_fills: Vec<&crate::runtime::icb::IcbRenderFill> = fills
+        .iter()
+        .filter_map(|f| match f {
+            IcbCommandFill::Render(r) => Some(r),
+            IcbCommandFill::Compute(_) => {
+                crate::runtime::drain::note_store_route("icb_compute_in_render_skipped");
+                None
+            }
+        })
+        .collect();
+
+    if render_fills.is_empty() {
+        return EncodeStatus::Ok;
+    }
+
+    let total = render_fills.len();
+    for (idx, rf) in render_fills.iter().enumerate() {
+        let mut sub_req = req.clone();
+
+        // 1. Pipeline state inheritance / override
+        if rf.pipeline_ref != 0 {
+            sub_req.pipeline_ref = rf.pipeline_ref;
+        }
+
+        // 2. Buffer bindings overlay
+        if !rf.buffers.is_empty() {
+            let mut vbufs = (*sub_req.vertex_buffers).clone();
+            let mut fbufs = (*sub_req.fragment_buffers).clone();
+            for b in &rf.buffers {
+                let bind = BufferBind {
+                    index: b.index,
+                    buffer_ref: b.buffer_ref,
+                    resource: None,
+                    offset: b.offset,
+                    attribute_stride: if b.has_attribute_stride {
+                        Some(b.attribute_stride)
+                    } else {
+                        None
+                    },
+                };
+                match b.effective_stage() {
+                    IcbRenderBindStage::Vertex => {
+                        if let Some(pos) = vbufs.iter().position(|x| x.index == b.index) {
+                            vbufs[pos] = bind;
+                        } else {
+                            vbufs.push(bind);
+                        }
+                    }
+                    IcbRenderBindStage::Fragment => {
+                        if let Some(pos) = fbufs.iter().position(|x| x.index == b.index) {
+                            fbufs[pos] = bind;
+                        } else {
+                            fbufs.push(bind);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            sub_req.vertex_buffers = std::sync::Arc::new(vbufs);
+            sub_req.fragment_buffers = std::sync::Arc::new(fbufs);
+        }
+
+        // 3. Draw arguments unpack
+        match &rf.draw {
+            IcbRenderDraw::Primitives {
+                primitive_type,
+                vertex_start,
+                vertex_count,
+                instance_count,
+                base_instance,
+            } => {
+                sub_req.primitive_type = *primitive_type as u32;
+                sub_req.first_vertex = *vertex_start as u32;
+                sub_req.vertex_count = *vertex_count as u32;
+                sub_req.instance_count = (*instance_count as u32).max(1);
+                sub_req.base_instance = *base_instance as u32;
+                sub_req.indexed = None;
+            }
+            IcbRenderDraw::Indexed {
+                primitive_type,
+                index_type,
+                index_buffer_ref,
+                index_count,
+                index_buffer_offset,
+                index_wire_va: _,
+                instance_count,
+                base_vertex,
+                base_instance,
+            } => {
+                sub_req.primitive_type = *primitive_type as u32;
+                sub_req.instance_count = (*instance_count as u32).max(1);
+                sub_req.base_instance = *base_instance as u32;
+                sub_req.indexed = Some(IndexedDrawInfo {
+                    index_type: *index_type as u32,
+                    index_count: *index_count as u32,
+                    index_buffer_ref: *index_buffer_ref,
+                    index_buffer_offset: *index_buffer_offset,
+                    base_vertex: *base_vertex,
+                });
+            }
+            _ => {
+                return EncodeStatus::Unsupported("icb_draw_type_unsupported");
+            }
+        }
+
+        // 4. Render pass chaining and store plan
+        if idx > 0 {
+            sub_req.continues_render_pass = true;
+            for c in &mut sub_req.colors {
+                c.load_action = MTL_LOAD_ACTION_LOAD;
+            }
+            sub_req.chain_from_resident = true;
+        }
+        if idx + 1 < total {
+            sub_req.render_pass_continues = true;
+        }
+
+        let is_last = idx + 1 == total;
+        let (status, _) = encode_draw_chain(state, host, &mut sub_req, is_last, false);
+        if status != EncodeStatus::Ok {
+            return status;
+        }
+    }
+
+    EncodeStatus::Ok
 }
 
 // ---------------------------------------------------------------------------
@@ -23338,6 +23534,55 @@ mod storage_texture_admission_tests {
 
         let b5 = STORAGE_TEXTURE_BINDING_BASE + 5;
         assert!(is_storage_texture_binding(b5));
+    }
+}
+
+#[cfg(test)]
+mod vulkan_icb_tests {
+    use super::*;
+    use crate::runtime::host::FakeHost;
+    use crate::runtime::draw::{ColorRtRequest, DrawEncodeRequest, EncodeStatus};
+
+    #[test]
+    fn icb_execute_validation_and_empty_range() {
+        let mut host = FakeHost::new();
+        let mut state = DeviceState::new(crate::model::DeviceId(1), 14);
+
+        let req = DrawEncodeRequest {
+            task_id: 1,
+            colors: vec![ColorRtRequest {
+                width: 64,
+                height: 64,
+                mapping_id: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        // 1. Ref zero refused
+        assert_eq!(
+            encode_icb_execute_and_writeback(&mut state, &mut host, &req, 0, 0, 1),
+            EncodeStatus::BadArgs("icb_exec_ref_zero")
+        );
+
+        // 2. No color target refused
+        let no_colors = DrawEncodeRequest::default();
+        assert_eq!(
+            encode_icb_execute_and_writeback(&mut state, &mut host, &no_colors, 5, 0, 1),
+            EncodeStatus::BadArgs("icb_exec_no_color_target")
+        );
+
+        // 3. Range length 0 is valid no-op
+        assert_eq!(
+            encode_icb_execute_and_writeback(&mut state, &mut host, &req, 5, 0, 0),
+            EncodeStatus::Ok
+        );
+
+        // 4. Uncached ICB refused
+        assert_eq!(
+            encode_icb_execute_and_writeback(&mut state, &mut host, &req, 9999, 0, 1),
+            EncodeStatus::BadArgs("icb_fill_not_cached")
+        );
     }
 }
 
