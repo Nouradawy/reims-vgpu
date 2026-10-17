@@ -581,6 +581,14 @@ impl PassKey {
         }
     }
 
+    pub(crate) fn has_color0(&self) -> bool {
+        self.color0_format != ash::vk::Format::UNDEFINED
+    }
+
+    pub(crate) fn has_color(&self) -> bool {
+        self.has_color0() || self.secondary_count > 0
+    }
+
     pub(crate) fn color_feedback(self, index: usize) -> bool {
         index < u8::BITS as usize && self.feedback_colors & (1u8 << index) != 0
     }
@@ -739,6 +747,14 @@ impl PassCompatibilityKey {
 
     pub(crate) fn has_depth(self) -> bool {
         self.0.depth.is_some()
+    }
+
+    pub(crate) fn has_color0(self) -> bool {
+        self.0.has_color0()
+    }
+
+    pub(crate) fn has_color(self) -> bool {
+        self.0.has_color()
     }
 
     /// Which field makes two compatibility keys disagree, or `None` when they
@@ -1532,6 +1548,7 @@ pub(crate) fn unified_color_layout() -> bool {
 /// previous draw's store against this pass's `loadOp`, with no barrier from the
 /// draw. Weakening its source scope would silently make that skip unsound.
 fn external_dependencies(
+    has_color: bool,
     has_depth: bool,
     color_input: bool,
     host_accessible_color0: bool,
@@ -1540,10 +1557,19 @@ fn external_dependencies(
     // pass; see [`pass_exit_scope_narrow`].
     exit_scope_narrow: bool,
 ) -> [vk::SubpassDependency; 2] {
-    // Colour is unconditional: every pass this device builds has slot 0.
-    let mut attach_stages = vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT;
-    let mut attach_writes = vk::AccessFlags::COLOR_ATTACHMENT_WRITE;
-    let mut attach_reads = vk::AccessFlags::COLOR_ATTACHMENT_READ;
+    let (mut attach_stages, mut attach_writes, mut attach_reads) = if has_color {
+        (
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            vk::AccessFlags::COLOR_ATTACHMENT_READ,
+        )
+    } else {
+        (
+            vk::PipelineStageFlags::empty(),
+            vk::AccessFlags::empty(),
+            vk::AccessFlags::empty(),
+        )
+    };
     if has_depth {
         attach_stages |= vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
             | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS;
@@ -2176,46 +2202,37 @@ impl ObjectCaches {
         }
         counters.pass_misses.fetch_add(1, Ordering::Relaxed);
         let target_format = key.color0_format;
-        // A `LOAD` pass names the layout the *previous* pass left the attachment
-        // in, so it reads the exit constant rather than respelling the layout.
-        // These two agreeing is what lets `exec::pass_exit_needs_no_barrier`
-        // drop the transition between consecutive draws into one target; a
-        // second spelling here would make that skip a missing transition the
-        // first time somebody changed one of them.
+        let has_color0 = key.has_color0();
         let color0_final = key.color_final_layout(0);
         let (load_op, initial) = key.color0_load.ops(color0_final);
-        // Slot 0 (primary) and the secondary attachments (slot 1..) now exit the
-        // same way, at [`color0_pass_exit_layout`], and for the same reason: a
-        // consumer's barrier is what establishes the dependency, so leaving the
-        // mask at COLOR_ATTACHMENT_OPTIMAL forces that barrier to fire with a
-        // colour-write source scope rather than being skipped as a no-op. The
-        // registry tracks this layout.
-        let mut attachments = vec![vk::AttachmentDescription::default()
-            .format(target_format)
-            .samples(vk_sample_count(key.sample_count))
-            .load_op(load_op)
-            // Vulkan render-pass splits are an implementation detail inside one
-            // guest encoder. Preserve the scratch source across such a split;
-            // the guest's resolve-only store action still exposes only the
-            // single-sample destination.
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .initial_layout(initial)
-            .final_layout(color0_final)];
-        // Framebuffer fetch: when attachment 0 is also a subpass input, BOTH
-        // references must use GENERAL (same-attachment color+input requires it);
-        // the pass still transitions initial→GENERAL→final automatically.
         let color0_layout = key.color_layout(0);
-        let mut color_ref = vec![vk::AttachmentReference::default()
-            .attachment(0)
-            .layout(color0_layout)];
+
+        let mut attachments = Vec::new();
+        let mut color_ref = Vec::new();
+        if has_color0 {
+            attachments.push(
+                vk::AttachmentDescription::default()
+                    .format(target_format)
+                    .samples(vk_sample_count(key.sample_count))
+                    .load_op(load_op)
+                    .store_op(vk::AttachmentStoreOp::STORE)
+                    .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                    .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                    .initial_layout(initial)
+                    .final_layout(color0_final),
+            );
+            color_ref.push(
+                vk::AttachmentReference::default()
+                    .attachment(0)
+                    .layout(color0_layout),
+            );
+        }
         for (i, sec) in key.secondary[..key.secondary_count as usize]
             .iter()
             .enumerate()
         {
-            let attachment_index = i + 1;
-            let final_layout = key.color_final_layout(attachment_index);
+            let attachment_index = attachments.len() as u32;
+            let final_layout = key.color_final_layout(i + 1);
             let (sload, sinitial) = if sec.load {
                 (vk::AttachmentLoadOp::LOAD, final_layout)
             } else {
@@ -2234,12 +2251,12 @@ impl ObjectCaches {
             );
             color_ref.push(
                 vk::AttachmentReference::default()
-                    .attachment(1 + i as u32)
-                    .layout(key.color_layout(attachment_index)),
+                    .attachment(attachment_index)
+                    .layout(key.color_layout(i + 1)),
             );
         }
         let mut resolve_ref = Vec::new();
-        if key.multisample_resolve {
+        if key.multisample_resolve && has_color0 {
             let resolve_index = attachments.len() as u32;
             attachments.push(
                 vk::AttachmentDescription::default()
@@ -2306,9 +2323,13 @@ impl ObjectCaches {
                 .attachment(index)
                 .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
         });
-        let input_ref = [vk::AttachmentReference::default()
-            .attachment(0)
-            .layout(key.color_layout(0))];
+        let input_ref = if has_color0 {
+            Some([vk::AttachmentReference::default()
+                .attachment(0)
+                .layout(key.color_layout(0))])
+        } else {
+            None
+        };
         let mut subpass_desc = vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(&color_ref);
@@ -2316,7 +2337,9 @@ impl ObjectCaches {
             subpass_desc = subpass_desc.resolve_attachments(&resolve_ref);
         }
         if key.color_input {
-            subpass_desc = subpass_desc.input_attachments(&input_ref);
+            if let Some(inputs) = &input_ref {
+                subpass_desc = subpass_desc.input_attachments(inputs);
+            }
         }
         if let Some(depth_ref) = &depth_ref {
             subpass_desc = subpass_desc.depth_stencil_attachment(depth_ref);
@@ -2333,17 +2356,21 @@ impl ObjectCaches {
             .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
             .dst_access_mask(vk::AccessFlags::INPUT_ATTACHMENT_READ)
             .dependency_flags(vk::DependencyFlags::BY_REGION);
+        let has_color = key.has_color();
         let mut deps: Vec<vk::SubpassDependency> = external_dependencies(
+            has_color,
             key.depth.is_some(),
             key.color_input,
             key.host_accessible_color0,
             pass_exit_scope_narrow(),
         )
         .to_vec();
-        if key.color_input {
+        if key.color_input && has_color0 {
             deps.push(fetch_dep);
         }
-        deps.push(color_feedback_self_dependency(key.color_layout(0)));
+        if has_color0 {
+            deps.push(color_feedback_self_dependency(key.color_layout(0)));
+        }
         let rp_info = vk::RenderPassCreateInfo::default()
             .attachments(&attachments)
             .subpasses(&subpass)
@@ -2516,62 +2543,17 @@ impl ObjectCaches {
         // factor without `dualSrcBlend`, and invalid if they *disagree*
         // without `independentBlend` — which no single attachment can be
         // blamed for, which is why the second check takes the list.
+        let has_color0 = key.pass.has_color0();
         let blend_cell = reims_vgpu_vulkan::blend::BlendCell {
             dual_source: ctx.features.dual_src_blend,
             independent: ctx.features.independent_blend,
         };
-        let mut blend_plans = Vec::with_capacity(1 + key.pass.secondary_count());
-        {
-            let refuse = |reason: super::reason::DrawReason| {
-                crate::observe::Emit::decline("vk_engine_pipeline", &reason).fail();
-                DrawError::Unsupported(reason)
-            };
-            for slot in 0..=key.pass.secondary_count() {
-                let blend = if slot == 0 {
-                    key.blend
-                } else {
-                    key.secondary_blend[slot - 1]
-                };
-                let attempt = color_attachment_state(blend, key.color_write_mask[slot])
-                    .map_err(|r| refuse(super::reason::DrawReason::BlendDeclaration(r)))
-                    .and_then(|state| {
-                        reims_vgpu_vulkan::blend::plan(&state, blend_cell)
-                            .map_err(|r| refuse(super::reason::DrawReason::BlendDevice(r)))
-                    });
-                match attempt {
-                    Ok(plan) => blend_plans.push(plan),
-                    Err(err) => {
-                        self.pipelines.insert_negative(key.clone(), err.clone());
-                        return Err(err);
-                    }
-                }
-            }
-            if let Err(r) = reims_vgpu_vulkan::blend::independent(&blend_plans, blend_cell) {
-                let err = refuse(super::reason::DrawReason::BlendDevice(r));
-                self.pipelines.insert_negative(key.clone(), err.clone());
-                return Err(err);
-            }
-        }
-
-        // Every colour attachment, parsed once and planned once.
-        //
-        // Built here rather than beside the create-info below because both
-        // things that can go wrong are refusals of the whole pipeline, and a
-        // refusal belongs with the other capability checks in this run: typed
-        // decline, cached negatively so a replay returns this exact reason.
-        //
-        // Every attachment participates, not just slot 0. The secondaries
-        // carry their own decoded blend, and both questions are asked of the
-        // set: a pipeline is invalid if *any* attachment names a `SRC1_*`
-        // factor without `dualSrcBlend`, and invalid if they *disagree*
-        // without `independentBlend` — which no single attachment can be
-        // blamed for, which is why the second check takes the list.
-        let blend_cell = reims_vgpu_vulkan::blend::BlendCell {
-            dual_source: ctx.features.dual_src_blend,
-            independent: ctx.features.independent_blend,
-        };
-        let mut blend_plans = Vec::with_capacity(1 + key.pass.secondary_count());
-        {
+        let mut blend_plans = Vec::with_capacity(if has_color0 {
+            1 + key.pass.secondary_count()
+        } else {
+            0
+        });
+        if has_color0 {
             let refuse = |reason: super::reason::DrawReason| {
                 crate::observe::Emit::decline("vk_engine_pipeline", &reason).fail();
                 DrawError::Unsupported(reason)
@@ -2743,17 +2725,19 @@ impl ObjectCaches {
         let raster_spec = vk::SpecializationInfo::default()
             .map_entries(&raster_spec_entries)
             .data(&raster_spec_data);
-        let stages = [
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::VERTEX)
-                .module(vert_module)
-                .name(&main_c),
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(frag_module)
-                .name(&main_c)
-                .specialization_info(&raster_spec),
-        ];
+        let mut stages = vec![vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vert_module)
+            .name(&main_c)];
+        if !frag_spirv.is_empty() {
+            stages.push(
+                vk::PipelineShaderStageCreateInfo::default()
+                    .stage(vk::ShaderStageFlags::FRAGMENT)
+                    .module(frag_module)
+                    .name(&main_c)
+                    .specialization_info(&raster_spec),
+            );
+        }
         // Both lists were rebuilt here from the attributes with the step function
         // matched a second and a third time. They are built once, in the loop
         // that already refused every step function without a rate, so the two
@@ -4177,8 +4161,8 @@ mod object_cache_tests {
     fn the_narrow_pass_exit_keeps_the_consumer_that_issues_no_barrier() {
         for has_depth in [false, true] {
             for color_input in [false, true] {
-                let wide = external_dependencies(has_depth, color_input, false, false)[1];
-                let narrow = external_dependencies(has_depth, color_input, false, true)[1];
+                let wide = external_dependencies(true, has_depth, color_input, false, false)[1];
+                let narrow = external_dependencies(true, has_depth, color_input, false, true)[1];
                 let shape = format!("depth={has_depth} color_input={color_input}");
 
                 assert_eq!(
@@ -4235,7 +4219,7 @@ mod object_cache_tests {
                 for host_accessible in [false, true] {
                     // The shipping scope. The probe arm has its own test.
                     let [incoming, outgoing] =
-                        external_dependencies(has_depth, color_input, host_accessible, false);
+                        external_dependencies(true, has_depth, color_input, host_accessible, false);
                     let shape = format!(
                         "depth={has_depth} color_input={color_input} host={host_accessible}"
                     );
@@ -4435,14 +4419,15 @@ mod object_cache_tests {
     /// device. Mirrors the `deps` construction in `get_or_create_render_pass`.
     fn pass_dependency_count(key: PassKey) -> usize {
         external_dependencies(
+            key.has_color(),
             key.depth.is_some(),
             key.color_input,
             key.host_accessible_color0,
             pass_exit_scope_narrow(),
         )
         .len()
-            + usize::from(key.color_input)
-            + 1
+            + usize::from(key.color_input && key.has_color0())
+            + usize::from(key.has_color0())
     }
 
     /// Erasing feedback from the pass key must not erase it from the device.
@@ -4527,6 +4512,59 @@ mod object_cache_tests {
                 color0_pass_exit_layout(),
                 "{index}"
             );
+        }
+    }
+
+    #[test]
+    fn a_depth_only_pass_has_no_color_dependencies() {
+        let mut key = PassKey::single(Color0Load::Preserve, vk::Format::UNDEFINED);
+        key.depth = Some(DepthAttachKey {
+            load: false,
+            stencil: false,
+        });
+        assert!(!key.has_color0());
+        assert!(!key.has_color());
+        let deps = external_dependencies(
+            key.has_color(),
+            key.depth.is_some(),
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            deps[0].dst_stage_mask & vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags::empty()
+        );
+        assert_ne!(
+            deps[0].dst_stage_mask & vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+            vk::PipelineStageFlags::empty()
+        );
+    }
+
+    #[test]
+    fn multisample_resolve_pass_integrity_across_sample_counts() {
+        for samples in [2, 4, 8] {
+            let mut key = PassKey::single(Color0Load::Clear, vk::Format::B8G8R8A8_UNORM);
+            key.sample_count = samples;
+            key.multisample_resolve = true;
+            key.depth = Some(DepthAttachKey {
+                load: false,
+                stencil: true,
+            });
+            assert_eq!(key.sample_count, samples);
+            assert_eq!(
+                vk_sample_count(key.sample_count),
+                match samples {
+                    2 => vk::SampleCountFlags::TYPE_2,
+                    4 => vk::SampleCountFlags::TYPE_4,
+                    8 => vk::SampleCountFlags::TYPE_8,
+                    _ => unreachable!(),
+                }
+            );
+            let compat = key.framebuffer_compatibility();
+            assert_eq!(compat.0.sample_count, samples);
+            assert!(compat.0.multisample_resolve);
+            assert!(compat.0.depth.is_some());
         }
     }
 }

@@ -1842,7 +1842,11 @@ pub(crate) fn validate_v1(req: &DrawRequest) -> Result<(), DrawError> {
             DrawValidationDecline::EmptyVertexSpirv,
         ));
     }
-    if req.frag_spirv.is_empty() {
+    let is_depth_only = req.color_attachment.is_none()
+        && req.target_identity.is_none()
+        && req.secondary_targets.is_empty()
+        && req.depth.is_some();
+    if req.frag_spirv.is_empty() && !is_depth_only {
         return Err(DrawError::DrawValidation(
             DrawValidationDecline::EmptyFragmentSpirv,
         ));
@@ -3455,7 +3459,13 @@ pub(crate) unsafe fn execute_draw_inner(
         req.target_identity
             .as_ref()
             .map(|id| id.resident_format())
-            .unwrap_or(crate::backend::vulkan::translate::pixel::RESIDENT_RGBA_FORMAT)
+            .unwrap_or_else(|| {
+                if req.depth.is_some() && req.secondary_targets.is_empty() {
+                    vk::Format::UNDEFINED
+                } else {
+                    crate::backend::vulkan::translate::pixel::RESIDENT_RGBA_FORMAT
+                }
+            })
     });
     // A guest-sourced sampled bind used to force the immediate-submit path.
     // Its read of guest RAM happens when the CB *executes*, and this device
@@ -3934,7 +3944,7 @@ pub(crate) unsafe fn execute_draw_inner(
     }
     let raster_sample_count = req.raster_sample_count.max(1);
     let color_sample_count = req.color_sample_count.max(1);
-    if color_sample_count != raster_sample_count {
+    if pass_key.has_color() && color_sample_count != raster_sample_count {
         return Err(DrawError::Unsupported(
             super::reason::DrawReason::MultisampleAttachmentSampleCountMismatch {
                 attachment: color_sample_count,
@@ -4036,8 +4046,11 @@ pub(crate) unsafe fn execute_draw_inner(
     phase.enter(super::draw_phase::Phase::PipelineShader);
     let (vert_digest, vert_module) =
         caches.get_or_create_shader_memoized(ctx, &req.vert_spirv, counters, pools)?;
-    let (frag_digest, frag_module) =
-        caches.get_or_create_shader_memoized(ctx, &req.frag_spirv, counters, pools)?;
+    let (frag_digest, frag_module) = if req.frag_spirv.is_empty() {
+        (super::digest::Digest128::default(), vk::ShaderModule::null())
+    } else {
+        caches.get_or_create_shader_memoized(ctx, &req.frag_spirv, counters, pools)?
+    };
     phase.enter(super::draw_phase::Phase::PipelineLayoutPass);
     let layout = caches.get_or_create_layout(ctx, pools.layout_bindings(), None, counters)?;
     let (dsl, pipeline_layout) = (layout.dsl, layout.pipeline_layout);
@@ -4482,15 +4495,20 @@ pub(crate) unsafe fn execute_draw_inner(
     // slot's cached framebuffer was built against. One predicate, because the
     // two answers it feeds have to agree: which pass the slot is ensured under,
     // and whether the draw builds (and later disposes) a framebuffer of its own.
-    let ordinary_ad_hoc_framebuffer = is_mrt || req.depth.is_some() || req.color_input;
+    let ordinary_ad_hoc_framebuffer =
+        is_mrt || req.depth.is_some() || req.color_input || !pass_key.has_color0();
     let ad_hoc_framebuffer = ordinary_ad_hoc_framebuffer || req.multisample_resolve;
     let (primary_pass, primary_pass_compatibility) = if ad_hoc_framebuffer {
-        let mut color_only = PassKey::single(pass_key.color0_load, pass_key.color0_format);
-        color_only.host_accessible_color0 = pass_key.host_accessible_color0;
-        (
-            caches.get_or_create_pass(ctx, color_only, counters, pools)?,
-            color_only.framebuffer_compatibility(),
-        )
+        if pass_key.has_color0() {
+            let mut color_only = PassKey::single(pass_key.color0_load, pass_key.color0_format);
+            color_only.host_accessible_color0 = pass_key.host_accessible_color0;
+            (
+                caches.get_or_create_pass(ctx, color_only, counters, pools)?,
+                color_only.framebuffer_compatibility(),
+            )
+        } else {
+            (render_pass, pass_key.framebuffer_compatibility())
+        }
     } else {
         (render_pass, pass_key.framebuffer_compatibility())
     };
@@ -4573,7 +4591,11 @@ pub(crate) unsafe fn execute_draw_inner(
                     pools,
                     counters,
                     req,
-                    primary_view,
+                    if pass_key.has_color0() {
+                        Some(primary_view)
+                    } else {
+                        None
+                    },
                     depth_attachment.as_ref().map(|d| d.view),
                     &mut mrt_secondaries,
                 )?;
@@ -4592,6 +4614,33 @@ pub(crate) unsafe fn execute_draw_inner(
             } else {
                 (primary_image, primary_slot_fb, primary_access, primary_view)
             }
+        } else if !pass_key.has_color0() {
+            let views = ad_hoc_attachment_views(
+                ctx,
+                pools,
+                counters,
+                req,
+                None,
+                depth_attachment.as_ref().map(|d| d.view),
+                &mut mrt_secondaries,
+            )?;
+            let fb = pools.ensure_ad_hoc_framebuffer(
+                ctx,
+                render_pass,
+                &views,
+                req.width,
+                req.height,
+                counters,
+            )?;
+            if let Some(d) = depth_attachment.as_ref() {
+                transient_depth = Some((d.owned, fb));
+            }
+            (
+                vk::Image::null(),
+                fb,
+                super::pools::ResidentAccess::Untouched,
+                vk::ImageView::null(),
+            )
         } else {
             let target_key = TargetKey {
                 width: req.width,
@@ -4609,7 +4658,7 @@ pub(crate) unsafe fn execute_draw_inner(
                     pools,
                     counters,
                     req,
-                    pool_view,
+                    Some(pool_view),
                     depth_attachment.as_ref().map(|d| d.view),
                     &mut mrt_secondaries,
                 )?;
@@ -5101,7 +5150,7 @@ pub(crate) unsafe fn execute_draw_inner(
     // over a four-byte slot is a device-side write past the slot, not a short
     // read. The seed path above answers the same question on the way in, and
     // states the same reason.
-    let do_readback = !req.skip_readback;
+    let do_readback = !req.skip_readback && pass_key.has_color0();
     let rb_size = match super::readback_slot_bytes(req.width, req.height, color0_format) {
         Some(bytes) => bytes,
         // A draw that reads nothing back allocates no slot, so a geometry
@@ -6091,8 +6140,8 @@ pub(crate) unsafe fn execute_draw_inner(
         );
     }
 
-    let mut clear = clear_values(req)?;
-    if multisample_cold_clear {
+    let mut clear = clear_values(req, pass_key.has_color0())?;
+    if multisample_cold_clear && pass_key.has_color0() {
         clear.values[0] = vk::ClearValue {
             color: vk::ClearColorValue { float32: [0.0; 4] },
         };
@@ -7129,7 +7178,7 @@ unsafe fn ad_hoc_attachment_views(
     pools: &mut ResourcePools,
     counters: &EngineCounters,
     req: &DrawRequest,
-    primary_view: vk::ImageView,
+    primary_view: Option<vk::ImageView>,
     depth_view: Option<vk::ImageView>,
     mrt_secondaries: &mut Vec<(
         super::types::TargetIdentity,
@@ -7137,7 +7186,10 @@ unsafe fn ad_hoc_attachment_views(
         super::pools::ResidentAccess,
     )>,
 ) -> Result<Vec<vk::ImageView>, DrawError> {
-    let mut views = vec![primary_view];
+    let mut views = Vec::new();
+    if let Some(pv) = primary_view {
+        views.push(pv);
+    }
     for sec in &req.secondary_targets {
         let prior = pools.registry_get(&sec.identity);
         let old_access = prior
@@ -7193,17 +7245,19 @@ unsafe fn ad_hoc_attachment_views(
 /// pass to LOAD. The clear now travels as
 /// [`super::types::DrawRequest::color_attachment`], already paired with its
 /// format by attachment translation.
-fn clear_values(req: &DrawRequest) -> Result<ClearValues, DrawError> {
+fn clear_values(req: &DrawRequest, has_color0: bool) -> Result<ClearValues, DrawError> {
     let mut clear = ClearValues::default();
     // With no declared attachment the clear is transparent black. Every Vulkan
     // union member represents that value with the same zero bits.
-    clear.push(vk::ClearValue {
-        color: req
-            .color_attachment
-            .map(|a| a.clear())
-            .unwrap_or_default()
-            .vk(),
-    })?;
+    if has_color0 {
+        clear.push(vk::ClearValue {
+            color: req
+                .color_attachment
+                .map(|a| a.clear())
+                .unwrap_or_default()
+                .vk(),
+        })?;
+    }
     for sec in &req.secondary_targets {
         clear.push(vk::ClearValue {
             color: sec.attachment.clear().vk(),
@@ -7213,7 +7267,7 @@ fn clear_values(req: &DrawRequest) -> Result<ClearValues, DrawError> {
     // slots and before depth (`caches::get_or_create_pass`). Its load op is
     // DONT_CARE, so the value is never read; the entry exists so depth's lands
     // at depth's index.
-    if resolve_clear_slot(req.multisample_resolve, msaa_resolve_clear_slot_enabled()) {
+    if resolve_clear_slot(req.multisample_resolve, msaa_resolve_clear_slot_enabled()) && has_color0 {
         crate::runtime::drain::note_store_route("msaa_resolve_clear_slot_filled");
         clear.push(vk::ClearValue::default())?;
     }
@@ -7912,6 +7966,7 @@ mod tests {
     /// exactly the single-bit mask for that rung.
     #[test]
     fn every_join_refusal_is_reachable_and_named_once() {
+        let _arm_off = MrtBatchOverride::new(0);
         let mut seen = std::collections::HashSet::new();
         for (rung, (_, _, name)) in JoinTerms::LADDER.iter().enumerate() {
             assert_eq!(
@@ -9028,7 +9083,7 @@ mod tests {
             ..DrawRequest::default()
         };
 
-        let clear = clear_values(&req).expect("within the attachment cap");
+        let clear = clear_values(&req, true).expect("within the attachment cap");
         assert_eq!(
             clear.len(),
             4,
@@ -9246,7 +9301,7 @@ mod tests {
             ..DrawRequest::default()
         };
         assert_eq!(
-            clear_values(&full).expect("a full pass is a pass").len(),
+            clear_values(&full, true).expect("a full pass is a pass").len(),
             1 + MAX_SECONDARY_ATTACH + 1,
             "the capacity is every attachment a pass this device builds can have"
         );
@@ -9259,7 +9314,7 @@ mod tests {
         };
         assert!(
             matches!(
-                clear_values(&over),
+                clear_values(&over, true),
                 Err(DrawError::Unsupported(
                     super::super::reason::DrawReason::SecondaryAttachmentCap { .. }
                 ))
@@ -9288,7 +9343,7 @@ mod tests {
             }),
             ..DrawRequest::default()
         };
-        let clear = clear_values(&req).expect("three attachments");
+        let clear = clear_values(&req, true).expect("three attachments");
         assert_eq!(clear.len(), 3, "colour, resolve, depth");
         unsafe { assert_eq!(clear[2].depth_stencil.depth, 0.5) };
     }
@@ -9297,9 +9352,29 @@ mod tests {
     /// draw that names no colour has always got.
     #[test]
     fn an_unstated_clear_is_transparent_black() {
-        let clear = clear_values(&DrawRequest::default()).expect("one attachment");
+        let clear = clear_values(&DrawRequest::default(), true).expect("one attachment");
         assert_eq!(clear.len(), 1, "no secondaries and no depth is one entry");
         unsafe { assert_eq!(clear[0].color.float32, [0.0; 4]) };
+    }
+
+    /// A depth-only request without color0 produces clear values starting with depth at index 0.
+    #[test]
+    fn a_depth_only_clear_has_no_color_entry() {
+        let req = DrawRequest {
+            depth: Some(super::super::types::DepthState {
+                identity: None,
+                test_enable: true,
+                write_enable: true,
+                compare: super::super::types::SamplerCompareFunction::Less,
+                clear_value: 0.75,
+                load: false,
+                stencil: None,
+            }),
+            ..DrawRequest::default()
+        };
+        let clear = clear_values(&req, false).expect("depth-only clear values");
+        assert_eq!(clear.len(), 1, "only depth attachment in framebuffer");
+        unsafe { assert_eq!(clear[0].depth_stencil.depth, 0.75) };
     }
 
     /// Integer attachments select Vulkan's integer clear member on every MRT
@@ -9323,7 +9398,7 @@ mod tests {
             ..DrawRequest::default()
         };
 
-        let clear = clear_values(&req).expect("within the attachment cap");
+        let clear = clear_values(&req, true).expect("within the attachment cap");
         unsafe {
             assert_eq!(clear[0].color.uint32, [1, 2, 65_535, 0]);
             assert_eq!(clear[1].color.uint32, [5, 6, 7, 8]);

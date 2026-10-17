@@ -285,7 +285,16 @@ fn encode_draw_chain_inner<M: HostMemory + HostOps>(
         }
         colors
     };
-    let Some((pass_w, pass_h)) = colors.first().map(|c0| (c0.width, c0.height)) else {
+    let Some((pass_w, pass_h)) = colors.first().map(|c0| (c0.width, c0.height)).or_else(|| {
+        if req.depth_attach.is_some() || req.stencil_attach.is_some() {
+            req.viewports
+                .first()
+                .map(|vp| (vp[2].max(0.0) as u32, vp[3].max(0.0) as u32))
+                .or_else(|| req.scissors.first().map(|sc| (sc.x + sc.width, sc.y + sc.height)))
+        } else {
+            None
+        }
+    }) else {
         return (EncodeStatus::BadArgs("draw_vk_no_color_target"), None);
     };
 
@@ -930,6 +939,8 @@ fn encode_draw_chain_inner<M: HostMemory + HostOps>(
                 // framebuffer to a binding that is dropped unread.
                 return (EncodeStatus::Ok, None);
             }
+        } else {
+            return (EncodeStatus::Ok, None);
         }
     }
 
@@ -12191,7 +12202,16 @@ pub(super) fn try_metal2vulkan_draw_with<M: HostMemory + HostOps>(
     }
 
     crate::runtime::chain_phase::enter(crate::runtime::chain_phase::Phase::Pipeline);
-    let Some((w, h)) = req.colors.first().map(|c0| (c0.width, c0.height)) else {
+    let Some((w, h)) = req.colors.first().map(|c0| (c0.width, c0.height)).or_else(|| {
+        if req.depth_attach.is_some() || req.stencil_attach.is_some() {
+            req.viewports
+                .first()
+                .map(|vp| (vp[2].max(0.0) as u32, vp[3].max(0.0) as u32))
+                .or_else(|| req.scissors.first().map(|sc| (sc.x + sc.width, sc.y + sc.height)))
+        } else {
+            None
+        }
+    }) else {
         return Ok(M2vDrawSpan::None);
     };
     // The bound is the device's own `maxImageDimension2D`, not a fixed number:
@@ -15746,7 +15766,11 @@ pub(super) fn try_metal2vulkan_draw_with<M: HostMemory + HostOps>(
         }
         crate::runtime::chain_phase::enter(crate::runtime::chain_phase::Phase::Assemble);
         resources.vert_spirv = v_words;
-        resources.frag_spirv = f_words;
+        resources.frag_spirv = if pd.fragment_func_ref == 0 {
+            std::sync::Arc::new(Vec::new())
+        } else {
+            f_words
+        };
         resources.vert_used_descriptor_bindings = v_variant.used_descriptor_bindings.clone();
         resources.frag_used_descriptor_bindings = f_variant.used_descriptor_bindings.clone();
         resources.width = w;
