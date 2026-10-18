@@ -217,6 +217,17 @@ pub fn surface_currency<M: HostOps>(
     width: u32,
     height: u32,
 ) -> SurfaceCurrency {
+    if crate::runtime::lab_video::video_gate()
+        && state.mappings.get(&mapping_id).is_some_and(|m| {
+            m.is_video_stream
+                || crate::protocol::pixel_format::is_video_or_biplanar_format(m.format)
+                || crate::protocol::pixel_format::is_video_chroma_format(m.format)
+        })
+    {
+        crate::runtime::drain::note_store_route("surface_currency_video_stream_elided");
+        return SurfaceCurrency::WroteUnknown;
+    }
+
     if lab_monster_prewarm() {
         return surface_currency_memo(state, host, mapping_id, width, height);
     }

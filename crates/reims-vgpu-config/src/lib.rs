@@ -1605,6 +1605,30 @@ pub const MSAA_RESOLVE_CLEAR_SLOT: &str = "REIMS_VGPU_MSAA_RESOLVE_CLEAR_SLOT";
 /// restores legacy behavior (one discard-only slot, Load refused); logged once as
 /// `msaa_load_disabled`.
 pub const MSAA_LOAD: &str = "REIMS_VGPU_MSAA_LOAD";
+
+/// TEMP (lab, Nour 030755cd port). **Default off.** Video format gating: a mapping
+/// that is a video chroma / biplanar plane (RG8/RG16 unorm/uint) or was backed
+/// multiplanar is treated as written (guest-write verdict `Wrote`, surface
+/// currency `WroteUnknown`) instead of going through the dirty-tracking checks.
+/// `on` (`1`) enables it; logged once as `lab_video_gate_on`.
+pub const LAB_VIDEO_GATE: &str = "REIMS_VGPU_LAB_VIDEO_GATE";
+
+/// TEMP (lab, Nour 030755cd port). **Default off.** Surface shutdown guards:
+/// writes through retained translations (GVA fresh span, GVA span write, copied
+/// GVA frame, GVA plane writeback) into pages the guest released are declined
+/// (`released_write_blocked`), a released mapping's pending writeback debt is
+/// cancelled, and a debt for a mapping released since its last resolve (or with
+/// a released page, or a moved generation / missing mapping) abandons its
+/// resident instead of paying. `on` (`1`) enables it; logged once as
+/// `lab_release_guards_on`.
+pub const LAB_RELEASE_GUARDS: &str = "REIMS_VGPU_LAB_RELEASE_GUARDS";
+
+/// TEMP (lab, Nour 030755cd port). **Default off.** Frontbuffer swap latching:
+/// every named-mapping present sets `guest_copies_framebuffers` (presented-frame
+/// payment armed), regardless of `REIMS_VGPU_PRESENT_PAYMENT`. Independent of
+/// `REIMS_VGPU_LAB_DIRECT_REDRAW` (host-window present path). `on` (`1`) enables
+/// it; logged once as `lab_frontbuffer_latch_on`.
+pub const LAB_FRONTBUFFER_LATCH: &str = "REIMS_VGPU_LAB_FRONTBUFFER_LATCH";
 }
 
 counts! {

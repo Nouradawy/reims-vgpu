@@ -90,6 +90,7 @@ pub mod icb;
 /// TEMP (lab, `REIMS_VGPU_LAB_CH2_RETURN_CNT`): the returning-IOSurface census
 /// on ch2 map/unmap, sizing the guest import-cache lever.
 pub mod lab_ch2ret;
+pub(crate) mod lab_video;
 pub mod lab_repeat;
 pub mod lab_runs;
 
