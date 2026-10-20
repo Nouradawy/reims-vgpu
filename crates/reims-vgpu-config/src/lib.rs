@@ -1657,6 +1657,14 @@ pub const LAB_CURSOR_LOCKFREE: &str = "REIMS_VGPU_LAB_CURSOR_LOCKFREE";
 /// telemetry extras (e.g., staging data hashing to detect byte-identical
 /// compute input reseeds) without changing graphics output or rendering behavior.
 pub const LAB_IOSURFACE_CENSUS: &str = "REIMS_VGPU_LAB_IOSURFACE_CENSUS";
+
+/// **Default off (lab).** Phase 1 read-only shadow registry. Tracks IOSurface plane
+/// state transitions in parallel with the legacy pipeline and asserts/logs shadow decisions.
+pub const LAB_IOSURFACE_REGISTRY_SHADOW: &str = "REIMS_VGPU_LAB_IOSURFACE_REGISTRY_SHADOW";
+
+/// **Default off (lab).** Phase 2 persistent images for GPU-only surfaces.
+/// Cures disappearing icons and swipe stalls by holding persistent VkImages for GpuAuthoritative planes.
+pub const LAB_IOSURFACE_PERSISTENT_GPU: &str = "REIMS_VGPU_LAB_IOSURFACE_PERSISTENT_GPU";
 }
 
 counts! {

@@ -87,6 +87,8 @@ pub mod host;
 pub mod host_writes;
 /// Serializer-object ICB (0x36) materialization, host command fills, execute writeback.
 pub mod icb;
+/// Persistent host GPU images per guest IOSurface plane (Phases 1-7).
+pub mod iosurface_registry;
 /// TEMP (lab, `REIMS_VGPU_LAB_CH2_RETURN_CNT`): the returning-IOSurface census
 /// on ch2 map/unmap, sizing the guest import-cache lever.
 pub mod lab_ch2ret;
