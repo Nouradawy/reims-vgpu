@@ -34,6 +34,7 @@ mod host_ram;
 pub mod init_decline;
 mod linear_target_import;
 mod page_diff;
+pub(crate) mod pipeline_cache_persist;
 pub(crate) mod pass_stage;
 mod pay_band;
 /// TEMP (lab, `REIMS_VGPU_LAB_PCACHE_SHARD`): per-pipeline-key warm pipeline

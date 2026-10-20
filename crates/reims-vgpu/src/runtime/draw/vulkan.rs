@@ -12806,16 +12806,50 @@ pub(super) fn try_metal2vulkan_draw_with<M: HostMemory + HostOps>(
             for (_, use_) in &uses {
                 crate::runtime::drain::note_store_route(use_.slug());
             }
-            if let Some((gap, _)) = uses.iter().find(|(gap, use_)| {
-                gap.class == crate::runtime::draw::vulkan::FragUnboundClass::Buffer
-                    && use_.is_violation()
-            }) {
-                return Err(DrawError::DrawPreparation(
-                    DrawPreparationDecline::UnboundStorageBuffer {
-                        index: gap.metal_index,
-                        binding: gap.metal_index + FRAG_BUFFER_BINDING_OFFSET,
-                    },
-                ));
+            // v14: a statically used buffer the guest left unbound is served
+            // the zeroed neutral page when the shader only reads it; every
+            // other case keeps the refusal below (`unbound_buffer_serve`).
+            let mut zero_served: Vec<u32> = Vec::new();
+            for (gap, use_) in &uses {
+                if gap.class != crate::runtime::draw::vulkan::FragUnboundClass::Buffer
+                    || !use_.is_violation()
+                {
+                    continue;
+                }
+                let access = crate::runtime::spirv_bind::reflected_buffer_access(
+                    &f_shader.reflection,
+                    gap.metal_index,
+                );
+                match unbound_buffer_serve(access, unbound_buffer_zero_enabled()) {
+                    UnboundBufferServe::Zero => {
+                        crate::runtime::drain::note_store_route(UnboundBufferServe::Zero.slug());
+                        zero_served.push(gap.metal_index);
+                    }
+                    refused => {
+                        crate::runtime::drain::note_store_route(refused.slug());
+                        return Err(DrawError::DrawPreparation(
+                            DrawPreparationDecline::UnboundStorageBuffer {
+                                index: gap.metal_index,
+                                binding: gap.metal_index + FRAG_BUFFER_BINDING_OFFSET,
+                            },
+                        ));
+                    }
+                }
+            }
+            for index in zero_served {
+                let content = crate::backend::vulkan::engine::BufferContent::Bytes(
+                    crate::runtime::spirv_bind::neutral_bind_bytes(),
+                );
+                frag_storage.push((index, content.clone()));
+                let binding = if buf_collide {
+                    index + FRAG_BUFFER_BINDING_OFFSET
+                } else {
+                    index
+                };
+                storage.push(crate::backend::vulkan::engine::StorageBufferResource {
+                    binding,
+                    content,
+                });
             }
             if !unbound.is_empty() {
                 // Cold path only: build the provided-index sets for the log detail.
@@ -21397,6 +21431,137 @@ pub(super) fn frag_unbound_textures_to_neutralize(
         .filter(|(gap, use_)| use_.is_violation() && gap.class == FragUnboundClass::Texture)
         .map(|(gap, _)| gap.metal_index)
         .collect()
+}
+
+/// v14: what a statically used fragment buffer the guest left unbound gets.
+///
+/// Metal lets a pass leave a buffer argument nil when the shader's own control
+/// flow never reaches it; Vulkan still needs a descriptor. Reads see the zeroed
+/// neutral page (and `robustBufferAccess` keeps reads past it defined). A
+/// shader that may write the buffer, or whose access reflection cannot name,
+/// keeps the v13 refusal: zeros would be a guess there, and a write would land
+/// in a page other draws share.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UnboundBufferServe {
+    /// Bind the shared zeroed neutral page.
+    Zero,
+    /// `REIMS_VGPU_UNBOUND_BUFFER_ZERO=0`.
+    RefusedDisabled,
+    /// Reflection says the shader may write it.
+    RefusedWritable,
+    /// Reflection declares it without a usable access answer.
+    RefusedUnknown,
+    /// Reflection declares no buffer here at all.
+    RefusedAbsent,
+}
+
+impl UnboundBufferServe {
+    pub(crate) fn slug(self) -> &'static str {
+        match self {
+            Self::Zero => "unbound_buffer_zero_served",
+            Self::RefusedDisabled => "unbound_buffer_zero_refused_disabled",
+            Self::RefusedWritable => "unbound_buffer_zero_refused_writable",
+            Self::RefusedUnknown => "unbound_buffer_zero_refused_unknown",
+            Self::RefusedAbsent => "unbound_buffer_zero_refused_absent",
+        }
+    }
+}
+
+/// Pure rule behind [`UnboundBufferServe`].
+pub(crate) fn unbound_buffer_serve(
+    access: crate::runtime::spirv_bind::ReflectedBufferAccess,
+    enabled: bool,
+) -> UnboundBufferServe {
+    use crate::runtime::spirv_bind::ReflectedBufferAccess as A;
+    if !enabled {
+        return UnboundBufferServe::RefusedDisabled;
+    }
+    match access {
+        A::Unused | A::ReadOnly => UnboundBufferServe::Zero,
+        A::Writable => UnboundBufferServe::RefusedWritable,
+        A::Unknown => UnboundBufferServe::RefusedUnknown,
+        A::Absent => UnboundBufferServe::RefusedAbsent,
+    }
+}
+
+/// `REIMS_VGPU_UNBOUND_BUFFER_ZERO`, read once (default on).
+pub(crate) fn unbound_buffer_zero_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| match crate::config::read(crate::config::UNBOUND_BUFFER_ZERO) {
+        (crate::config::Switch::Off, _) => {
+            crate::observe::fail(
+                "unbound_buffer_zero_disabled reason=disabled_by_env (v13: an unbound statically used fragment buffer drops the draw)",
+            );
+            false
+        }
+        (crate::config::Switch::Unrecognized, value) => {
+            crate::observe::fail(format!(
+                "unbound_buffer_zero reason=unbound_buffer_zero_env_unrecognized value={:?} (kept on)",
+                value.unwrap_or_default()
+            ));
+            true
+        }
+        _ => true,
+    })
+}
+
+#[cfg(test)]
+mod unbound_buffer_zero_tests {
+    use super::{unbound_buffer_serve, UnboundBufferServe};
+    use crate::runtime::spirv_bind::ReflectedBufferAccess as A;
+
+    #[test]
+    fn read_only_and_unused_gaps_get_the_zero_page() {
+        assert_eq!(
+            unbound_buffer_serve(A::ReadOnly, true),
+            UnboundBufferServe::Zero
+        );
+        assert_eq!(
+            unbound_buffer_serve(A::Unused, true),
+            UnboundBufferServe::Zero
+        );
+    }
+
+    #[test]
+    fn writable_unknown_and_absent_keep_the_refusal() {
+        assert_eq!(
+            unbound_buffer_serve(A::Writable, true),
+            UnboundBufferServe::RefusedWritable
+        );
+        assert_eq!(
+            unbound_buffer_serve(A::Unknown, true),
+            UnboundBufferServe::RefusedUnknown
+        );
+        assert_eq!(
+            unbound_buffer_serve(A::Absent, true),
+            UnboundBufferServe::RefusedAbsent
+        );
+    }
+
+    #[test]
+    fn the_kill_switch_restores_v13() {
+        for a in [A::ReadOnly, A::Unused, A::Writable, A::Unknown, A::Absent] {
+            assert_eq!(
+                unbound_buffer_serve(a, false),
+                UnboundBufferServe::RefusedDisabled
+            );
+        }
+    }
+
+    #[test]
+    fn every_outcome_has_its_own_slug() {
+        let all = [
+            UnboundBufferServe::Zero,
+            UnboundBufferServe::RefusedDisabled,
+            UnboundBufferServe::RefusedWritable,
+            UnboundBufferServe::RefusedUnknown,
+            UnboundBufferServe::RefusedAbsent,
+        ];
+        let mut slugs: Vec<&str> = all.iter().map(|o| o.slug()).collect();
+        slugs.sort_unstable();
+        slugs.dedup();
+        assert_eq!(slugs.len(), all.len());
+    }
 }
 
 /// One pass over the fragment reflection finding standard directly-bound kinds

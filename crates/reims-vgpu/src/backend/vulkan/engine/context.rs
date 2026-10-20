@@ -109,26 +109,93 @@ const PIPELINE_CACHE_HEADER_ONE_LEN: usize = 32;
 /// exceeds it rebuilds every boot and says so by name, which costs a cold start
 /// and is what the arms above price at 0.5-1.4 ms a compile — the parked blob
 /// costs more than that and reports nothing.
-const PIPELINE_CACHE_MAX_WARM_BYTES: usize = 8 * 1024 * 1024;
+/// **v12 (2026-10-15): raised from 8 MiB to 50 MiB.** Tahoe's single-boot
+/// working set is not the macos-13/macos-15 one the paragraphs above were
+/// sized from: the v11 boot1 log hit the bound ~100 s in with
+/// `bytes=9772133 > 8388608` and kept a 6444408-byte snapshot at 627
+/// pipelines, so every later compile that boot was lost to the next one. The
+/// over-cap keep-last / discard-stale decision in
+/// `pipeline_cache_persist::decide_save` is unchanged; only the bound moved.
+/// The 14.4 MB penalty measured above is a macos-15 number and stays the thing
+/// to re-measure if a warm Tahoe boot is slower per compile than a cold one.
+/// `REIMS_VGPU_PIPELINE_CACHE_MAX_MB` narrows it (1..=50, never widens), read
+/// once through [`pipeline_cache_max_warm_bytes`].
+const PIPELINE_CACHE_MAX_WARM_BYTES: usize = 50 * 1024 * 1024;
 
-/// TEMP (lab): [`PIPELINE_CACHE_MAX_WARM_BYTES`], or `REIMS_VGPU_LAB_PCACHE_MAX_MB=N`
-/// MiB (1..=256). Latched.
-fn lab_pcache_cap() -> usize {
+/// The bound in force for this process: [`PIPELINE_CACHE_MAX_WARM_BYTES`], or
+/// the narrower whole-MiB value `REIMS_VGPU_PIPELINE_CACHE_MAX_MB` asked for.
+///
+/// Read once and cached, so neither a load nor a save re-reads the
+/// environment. A value outside `1..=50` is refused by name and the compiled
+/// bound kept, the same rule as every other count: an override may narrow
+/// and never widen.
+fn pipeline_cache_max_warm_bytes() -> usize {
     static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *CAP.get_or_init(|| {
-        std::env::var("REIMS_VGPU_LAB_PCACHE_MAX_MB")
-            .ok()
-            .and_then(|v| v.trim().parse::<usize>().ok())
-            .filter(|mb| (1..=256).contains(mb))
-            .map_or(PIPELINE_CACHE_MAX_WARM_BYTES, |mb| mb * 1024 * 1024)
+        const MIB: usize = 1024 * 1024;
+        let ceiling = (PIPELINE_CACHE_MAX_WARM_BYTES / MIB) as u64;
+        let (cap, source) = match crate::config::count(crate::config::PIPELINE_CACHE_MAX_MB, ceiling) {
+            crate::config::Count::Narrowed(mb) => (mb as usize * MIB, "env"),
+            crate::config::Count::Unset => (PIPELINE_CACHE_MAX_WARM_BYTES, "default"),
+            crate::config::Count::Refused(raw) => {
+                crate::observe::fail(format!(
+                    "pipeline_cache_max_mb_refused value={raw} ceiling={ceiling} \
+                     (a whole MiB from 1 to the ceiling narrows the bound; anything \
+                      else is ignored and the compiled bound kept)"
+                ));
+                (PIPELINE_CACHE_MAX_WARM_BYTES, "default_after_refusal")
+            }
+        };
+        crate::observe::off(format!(
+            "pipeline_cache_cap bytes={cap} source={source} default={PIPELINE_CACHE_MAX_WARM_BYTES}"
+        ));
+        cap
     })
 }
 
-/// TEMP (lab): `REIMS_VGPU_LAB_PCACHE_KEEP=on` stops saving past the bound but
-/// keeps the last blob that fit instead of discarding it. Latched.
-fn lab_pcache_keep() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("REIMS_VGPU_LAB_PCACHE_KEEP").is_ok_and(|v| v == "on"))
+/// v13: the cap the persistence arm uses. With
+/// `REIMS_VGPU_PIPELINE_CACHE_UNBOUNDED` on (default) there is no compiled
+/// bound: `usize::MAX`, or the optional lower limit
+/// `REIMS_VGPU_PIPELINE_CACHE_MAX_MB` sets. Off: exactly
+/// [`pipeline_cache_max_warm_bytes`] (v12). Read once; logged once as
+/// `pipeline_cache_cap`.
+fn pipeline_cache_persist_cap() -> usize {
+    static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CAP.get_or_init(|| {
+        use super::pipeline_cache_persist as pcp;
+        if !pcp::unbounded_enabled() {
+            return pipeline_cache_max_warm_bytes();
+        }
+        let count = crate::config::count(
+            crate::config::PIPELINE_CACHE_MAX_MB,
+            pcp::UNBOUNDED_MAX_MB_CEILING,
+        );
+        let (cap, source, refused) = pcp::unbounded_cap_from(count);
+        if let Some(raw) = refused {
+            crate::observe::fail(format!(
+                "pipeline_cache_max_mb_refused value={raw} ceiling={} \
+                 (a whole MiB from 1 to the ceiling sets a lower limit; anything \
+                  else is ignored and the cache stays unbounded)",
+                pcp::UNBOUNDED_MAX_MB_CEILING
+            ));
+        }
+        crate::observe::off(format!(
+            "pipeline_cache_cap bytes={} source={source} default=unbounded free_floor={}",
+            pcp::cap_text(cap),
+            pcp::DISK_FREE_FLOOR
+        ));
+        cap
+    })
+}
+
+/// v13: the save policy matching [`pipeline_cache_persist_cap`].
+fn pipeline_cache_persist_policy() -> super::pipeline_cache_persist::SavePolicy {
+    use super::pipeline_cache_persist as pcp;
+    if pcp::unbounded_enabled() {
+        pcp::SavePolicy::V13
+    } else {
+        pcp::SavePolicy::V12
+    }
 }
 
 /// The largest blob a single boot has been measured to settle at: 3.85 MB on
@@ -579,10 +646,10 @@ fn read_pipeline_cache_blob(
     match std::fs::read(path) {
         // Size is checked before compatibility only so the larger, cheaper-to-
         // decide refusal wins the report; both are cold starts either way.
-        Ok(blob) if blob.len() > lab_pcache_cap() => {
+        Ok(blob) if blob.len() > pipeline_cache_max_warm_bytes() => {
             Err(PipelineCacheDecline::TooLarge {
                 bytes: blob.len(),
-                cap: lab_pcache_cap(),
+                cap: pipeline_cache_max_warm_bytes(),
             })
         }
         Ok(blob) if pipeline_cache_blob_compatible(&blob, props) => Ok(Some(blob)),
@@ -926,6 +993,13 @@ pub(crate) struct DeviceContext {
     /// last snapshotted, and whether a compile since then is still unsaved.
     pub pipeline_cache_saved_ms: AtomicU64,
     pub pipeline_cache_save_pending: std::sync::atomic::AtomicBool,
+    /// The v10 persistence arm's live source (stable per-user path, saves on
+    /// the persistence thread, never on the drain). `None` when
+    /// `REIMS_VGPU_PIPELINE_CACHE_PERSIST=0` selected the legacy arm above
+    /// (`pipeline_cache_path` / `pipeline_cache_saved_len` /
+    /// `pipeline_cache_last_saved`), which then runs exactly as before. See
+    /// [`super::pipeline_cache_persist`].
+    pub(crate) pipeline_cache_persist: Option<std::sync::Arc<super::pipeline_cache_persist::Source>>,
     /// TEMP (lab, `REIMS_VGPU_LAB_PCACHE_SHARD=on`): the per-pipeline shard
     /// caches this device compiles through instead of the monolithic one —
     /// `Some` exactly when the flag is on, so every shard-mode branch is
@@ -1585,7 +1659,7 @@ impl DeviceContext {
         // and discarded by the monolithic bound while the shard directory is
         // what this boot actually warms from — so toggling the flag back and
         // forth leaves both caches intact for their A/B.
-        let pipeline_cache_path = pipeline_cache_disk_path(&props.pipeline_cache_uuid);
+        let persist_v10 = super::pipeline_cache_persist::enabled();
         let pcache_shards = if super::pcache_shard::enabled() {
             Some(Mutex::new(super::pcache_shard::ShardSet::open(
                 &super::pcache_shard::disk_dir(&props.pipeline_cache_uuid),
@@ -1594,16 +1668,54 @@ impl DeviceContext {
         } else {
             None
         };
-        let initial_blob = if pcache_shards.is_some() {
-            None
+        let (pipeline_cache_path, initial_blob) = if pcache_shards.is_some() {
+            (pipeline_cache_disk_path(&props.pipeline_cache_uuid), None)
+        } else if persist_v10 {
+            use super::pipeline_cache_persist as pcp;
+            let (dir, dir_source) = pcp::cache_dir();
+            if dir_source == pcp::DirSource::TempFallback {
+                crate::observe::fail(format!(
+                    "pipeline_cache_dir_fallback reason=no_user_cache_dir dir={} (may be cleaned between boots)",
+                    dir.display()
+                ));
+            }
+            let path = dir.join(pcp::cache_file_name(
+                props.vendor_id,
+                props.device_id,
+                props.driver_version,
+                &props.pipeline_cache_uuid,
+            ));
+            let blob = match pcp::load_blob(
+                &path,
+                props.vendor_id,
+                props.device_id,
+                &props.pipeline_cache_uuid,
+                // v13: unbounded unless REIMS_VGPU_PIPELINE_CACHE_UNBOUNDED=0
+                // (then exactly `pipeline_cache_max_warm_bytes()`, v12).
+                pipeline_cache_persist_cap(),
+            ) {
+                pcp::LoadOutcome::Loaded(blob) => Some(blob),
+                pcp::LoadOutcome::Absent => None,
+                pcp::LoadOutcome::Rejected { reason, bytes } => {
+                    crate::observe::fail(format!(
+                        "pipeline_cache_load_rejected reason={reason} bytes={bytes} path={} (starting with an empty cache)",
+                        path.display()
+                    ));
+                    None
+                }
+            };
+            (path, blob)
         } else {
-            match read_pipeline_cache_blob(&pipeline_cache_path, &props) {
+            // Legacy arm (switch off): `%TEMP%`, keyed by UUID only.
+            let pipeline_cache_path = pipeline_cache_disk_path(&props.pipeline_cache_uuid);
+            let initial_blob = match read_pipeline_cache_blob(&pipeline_cache_path, &props) {
                 Ok(blob) => blob,
                 Err(decline) => {
                     crate::observe::Emit::decline("vk_pipeline_cache_load", &decline).fail_once(0);
                     None
                 }
-            }
+            };
+            (pipeline_cache_path, initial_blob)
         };
         let mut pcci = vk::PipelineCacheCreateInfo::default();
         if let Some(blob) = initial_blob.as_deref() {
@@ -1617,6 +1729,13 @@ impl DeviceContext {
                 // the cold cache as length zero so the next save repairs disk.
                 let decline = PipelineCacheDecline::WarmCreate { result };
                 crate::observe::Emit::decline("vk_pipeline_cache_load", &decline).fail_once(0);
+                if persist_v10 {
+                    crate::observe::fail(format!(
+                        "pipeline_cache_load_rejected reason=warm_create vk_result={} path={} (starting with an empty cache)",
+                        result.to_string().replace(char::is_whitespace, "_"),
+                        pipeline_cache_path.display()
+                    ));
+                }
                 let cache = device
                     .create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None)
                     .map_err(|result| {
@@ -1632,6 +1751,24 @@ impl DeviceContext {
             "vk_pipeline_cache_load bytes={initial_len} path={}",
             pipeline_cache_path.display()
         ));
+        let pipeline_cache_persist = if persist_v10 && pcache_shards.is_none() {
+            crate::observe::off(format!(
+                "pipeline_cache_loaded bytes={initial_len} path={}",
+                pipeline_cache_path.display()
+            ));
+            let source = super::pipeline_cache_persist::Source::new_with_policy(
+                device.clone(),
+                pipeline_cache,
+                pipeline_cache_path.clone(),
+                pipeline_cache_persist_cap(),
+                initial_len,
+                pipeline_cache_persist_policy(),
+            );
+            super::pipeline_cache_persist::register(&source);
+            Some(source)
+        } else {
+            None
+        };
         Ok(Self {
             _entry: entry,
             instance,
@@ -1669,6 +1806,7 @@ impl DeviceContext {
             pipeline_cache_saved_len: AtomicUsize::new(initial_len),
             pipeline_cache_saved_ms: AtomicU64::new(0),
             pipeline_cache_save_pending: std::sync::atomic::AtomicBool::new(false),
+            pipeline_cache_persist,
             pcache_shards,
             #[cfg(feature = "host-window")]
             swapchain,
@@ -1706,6 +1844,14 @@ impl DeviceContext {
     /// creation rather than at context destroy is deliberate: the testing boot
     /// SIGKILLs QEMU, so destroy never runs there.
     pub(crate) fn persist_pipeline_cache(&self) {
+        if let Some(source) = &self.pipeline_cache_persist {
+            source.note_created();
+            return;
+        }
+        self.persist_pipeline_cache_internal(false);
+    }
+
+    pub(crate) fn persist_pipeline_cache_internal(&self, force: bool) {
         let Some(path) = self.pipeline_cache_path.clone() else {
             return;
         };
@@ -1715,7 +1861,7 @@ impl DeviceContext {
         // each — 1.8 GB serialized on the recorder thread and written to disk.
         // The rest is picked up by `persist_pipeline_cache_if_due`.
         let interval = lab_pcache_save_ms();
-        if interval > 0 {
+        if interval > 0 && !force {
             let now = crate::observe::elapsed_ms() as u64;
             let last = self.pipeline_cache_saved_ms.load(Ordering::Relaxed);
             if last != 0 && now.saturating_sub(last) < interval {
@@ -1747,31 +1893,15 @@ impl DeviceContext {
         };
         // Past the bound the blob costs more per compile than starting cold,
         // so this is where it is rebuilt — not merely left alone.
-        //
-        // Declining the write on its own was never the self-heal it was written
-        // to be. The load refuses at this same bound, and a save that never
-        // writes anything larger means the file can never exceed it, so the
-        // load's refusal could not fire. The blob climbed to just under the cap
-        // and stayed there for the life of the machine, which is the state six
-        // interleaved macos-15 boots priced at 3.9x per compile against a
-        // right-sized one. Discarding it is what makes the next boot cold and
-        // the one after that warm at this workload's own working-set size.
-        if data.len() > lab_pcache_cap() {
+        if data.len() > pipeline_cache_max_warm_bytes() {
             crate::observe::Emit::decline(
                 "vk_pipeline_cache_save",
                 &PipelineCacheDecline::TooLarge {
                     bytes: data.len(),
-                    cap: lab_pcache_cap(),
+                    cap: pipeline_cache_max_warm_bytes(),
                 },
             )
             .fail_once(0);
-            // TEMP (lab, REIMS_VGPU_LAB_PCACHE_KEEP=on): keep the last blob that
-            // fit. Tahoe at 5K settles at ~9 MiB, past the 8 MiB bound, so the
-            // discard made every boot cold (load bytes=0) and its first
-            // transitions compiled at 0.6-0.7 s a second.
-            if lab_pcache_keep() {
-                return;
-            }
             persist::submit(persist::Job::Discard { path });
             return;
         }
@@ -1802,10 +1932,15 @@ impl DeviceContext {
     }
 
     pub(crate) unsafe fn destroy(&mut self) {
-        // TEMP (lab): whatever the interval deferred lands before the cache goes.
-        if self.pipeline_cache_save_pending.load(Ordering::Relaxed) {
+        // v10 arm: close the source's gate before the cache is destroyed below
+        // (waits for at most one in-flight serialize), snapshot anything new,
+        // and hand the bytes to the persistence thread — no disk I/O here.
+        // Legacy arm: whatever the interval deferred lands before the cache goes.
+        if let Some(source) = self.pipeline_cache_persist.take() {
+            source.close();
+        } else if self.pipeline_cache_save_pending.load(Ordering::Relaxed) {
             self.pipeline_cache_saved_ms.store(0, Ordering::Relaxed);
-            self.persist_pipeline_cache();
+            self.persist_pipeline_cache_internal(true);
         }
         // The queue owner may still hold ended command buffers and a clone of
         // the device. Drain it before stopping completion publication or
@@ -2524,6 +2659,42 @@ mod pipeline_cache_blob_tests {
             "a blob at exactly the cap warms"
         );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// v12: the compiled bound is 50 MiB and the v11 Tahoe boot1 snapshot that
+    /// overflowed 8 MiB (9772133 bytes) now fits under it, so that boot writes
+    /// instead of keeping its 6444408-byte snapshot. With the override unset
+    /// (the test environment) the bound in force is the compiled one.
+    #[test]
+    fn the_pipeline_cache_bound_is_50_mib_and_holds_the_v11_tahoe_boot() {
+        assert_eq!(PIPELINE_CACHE_MAX_WARM_BYTES, 50 * 1024 * 1024);
+        if std::env::var_os(crate::config::PIPELINE_CACHE_MAX_MB).is_none() {
+            assert_eq!(pipeline_cache_max_warm_bytes(), PIPELINE_CACHE_MAX_WARM_BYTES);
+        }
+        assert_eq!(
+            super::super::pipeline_cache_persist::decide_save(
+                0,
+                6_444_408,
+                9_772_133,
+                PIPELINE_CACHE_MAX_WARM_BYTES
+            ),
+            super::super::pipeline_cache_persist::SaveDecision::Write
+        );
+    }
+
+    /// v13: with the switch at its default (unset in the test environment) the
+    /// persistence arm has no compiled bound and the never-delete, 1 GiB-floor
+    /// policy; the v12 bound itself is unchanged for the `=0` and legacy arms.
+    #[test]
+    fn v13_the_persist_cap_is_unbounded_by_default() {
+        use super::super::pipeline_cache_persist as pcp;
+        if std::env::var_os(crate::config::PIPELINE_CACHE_UNBOUNDED).is_none()
+            && std::env::var_os(crate::config::PIPELINE_CACHE_MAX_MB).is_none()
+        {
+            assert_eq!(pipeline_cache_persist_cap(), usize::MAX);
+            assert_eq!(pipeline_cache_persist_policy(), pcp::SavePolicy::V13);
+        }
+        assert_eq!(PIPELINE_CACHE_MAX_WARM_BYTES, 50 * 1024 * 1024);
     }
 
     /// The path is UUID-keyed: distinct devices never share a blob file.

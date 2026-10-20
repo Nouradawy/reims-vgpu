@@ -1665,9 +1665,29 @@ pub const LAB_IOSURFACE_REGISTRY_SHADOW: &str = "REIMS_VGPU_LAB_IOSURFACE_REGIST
 /// **Default off (lab).** Phase 2 persistent images for GPU-only surfaces.
 /// Cures disappearing icons and swipe stalls by holding persistent VkImages for GpuAuthoritative planes.
 pub const LAB_IOSURFACE_PERSISTENT_GPU: &str = "REIMS_VGPU_LAB_IOSURFACE_PERSISTENT_GPU";
+
+/// **Default on (v10).** Persist the monolithic `VkPipelineCache` at a stable
+/// per-user path across boots, and serialize/write it off the drain thread.
+pub const PIPELINE_CACHE_PERSIST: &str = "REIMS_VGPU_PIPELINE_CACHE_PERSIST";
+
+/// **Default on (v13).** The persisted pipeline cache has no compiled size
+/// bound (grows past 50 MiB, never discarded over the bound).
+pub const PIPELINE_CACHE_UNBOUNDED: &str = "REIMS_VGPU_PIPELINE_CACHE_UNBOUNDED";
+
+/// **Default on (v13 fix D, icons).** A colour LOAD on a GVA render target
+/// was refused direct GPU writes for good (`GuestRefRefused{WritesNarrowed}`).
+/// On, a mapping counts as released only until it adopts fresh page entries.
+pub const INCARNATION_WRITES: &str = "REIMS_VGPU_INCARNATION_WRITES";
+
+/// **Default on (v14).** A fragment shader that statically uses a
+/// `[[buffer(n)]]` the guest left unbound is served the shared zeroed neutral page.
+pub const UNBOUND_BUFFER_ZERO: &str = "REIMS_VGPU_UNBOUND_BUFFER_ZERO";
 }
 
 counts! {
+
+/// An optional lower limit for the persisted pipeline cache in whole MiB.
+pub const PIPELINE_CACHE_MAX_MB: &str = "REIMS_VGPU_PIPELINE_CACHE_MAX_MB";
 
 /// **A count, not a switch.** How many draws one command buffer may carry,
 /// narrowing the active memory-topology batch policy. Read through [`count`],
