@@ -547,6 +547,11 @@ fn encode_draw_chain_inner<M: HostMemory + HostOps>(
                 match (stored, c0_store) {
                     (true, Some((mid, cw, ch, fmt))) => {
                         note_mapper_ref_texture_store_route("surface_resident");
+                        crate::runtime::iosurface_registry::shadow::note_shadow_event(
+                            mid,
+                            0,
+                            crate::runtime::iosurface_registry::PlaneEvent::GpuWrite,
+                        );
                         // The same two publishes the `Owned` rail performs at arm
                         // time, for the same reason: `dense_frame_seq` gates
                         // `present_unbacked`, and a route that skipped it would
@@ -5779,6 +5784,11 @@ fn resolve_mapper_ref_texture_load_seed<M: HostMemory + HostOps>(
         }
     }
     note_mapper_ref_texture_load_seed(state, mapping_id, w, h, served.as_ref().map(|s| s.1));
+    crate::runtime::iosurface_registry::shadow::note_shadow_legacy_reseed(
+        mapping_id,
+        0,
+        guest_replaced,
+    );
     served.map(|(seed, _)| seed)
 }
 
@@ -6270,6 +6280,11 @@ pub(super) fn load_ref_texture_view_rgba<M: HostMemory + HostOps>(
     );
     crate::runtime::drain::note_store_route("ref_texture_view_resolved");
     crate::runtime::drain::note_store_route_n("ref_texture_view_bytes", native_len as u64);
+    crate::runtime::iosurface_registry::shadow::note_shadow_event(
+        mapping_id,
+        0,
+        crate::runtime::iosurface_registry::PlaneEvent::GpuReadRequest,
+    );
     Some((
         view.width,
         view.height,

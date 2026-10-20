@@ -2322,6 +2322,23 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
                 crate::runtime::drain::note_compute_reseed_hash(mapping_id, hash);
             }
         }
+        crate::runtime::iosurface_registry::shadow::note_shadow_event(
+            mapping_id,
+            0,
+            crate::runtime::iosurface_registry::PlaneEvent::GpuReadRequest,
+        );
+        crate::runtime::iosurface_registry::shadow::note_shadow_legacy_reseed(
+            mapping_id,
+            0,
+            serve.is_none(),
+        );
+        if is_storage {
+            crate::runtime::iosurface_registry::shadow::note_shadow_event(
+                mapping_id,
+                0,
+                crate::runtime::iosurface_registry::PlaneEvent::GpuWrite,
+            );
+        }
         let writeback = if is_storage {
             TextureWriteback::MapperRefTexture {
                 mapping_id,

@@ -8262,6 +8262,11 @@ fn apply_map_family<H: HostMemory + HostOps>(
             "unmapped"
         };
         crate::runtime::mapper::flush_retired_views(state, host);
+        crate::runtime::iosurface_registry::shadow::note_shadow_event(
+            object_id,
+            0,
+            crate::runtime::iosurface_registry::PlaneEvent::GuestDestroy,
+        );
         crate::observe::verbose(|| {
             format!(
                 "map_family op=DeleteIOSurfaceBacking2 ch={channel_id} object={object_id} task={task_id} plen={plen} mode={mode}"
@@ -8295,6 +8300,13 @@ fn apply_map_family<H: HostMemory + HostOps>(
                 let mut bumped = 0u32;
                 let mut miss = 0u32;
                 for rec in &cmd.records {
+                    crate::runtime::iosurface_registry::shadow::note_shadow_event(
+                        rec.object_id,
+                        0,
+                        crate::runtime::iosurface_registry::PlaneEvent::CpuWriteEvidence {
+                            dirty_rect: false,
+                        },
+                    );
                     let outcome = apply(
                         state,
                         cmd.task_id,
