@@ -1394,6 +1394,9 @@ pub(crate) trait RailStage: Sized {
         residency: Option<ComputeStorageResidencyCandidate>,
         serve: Option<ResidentServe>,
     ) -> Self;
+
+    /// Set an existing TargetIdentity resident image to sample directly from VRAM.
+    fn set_target_identity(&mut self, _identity: crate::backend::vulkan::engine::TargetIdentity) {}
 }
 
 /// The storage-mirror window a staged binding corresponds to.
@@ -2284,8 +2287,27 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
                 "compute_stage_resident_sample mapping={mapping_id} {width}x{height} fmt={stage_fmt:#x} gen={generation} bytes={need}"
             ));
         }
+        let persistent_gpu_on = crate::config::read(crate::config::LAB_IOSURFACE_PERSISTENT_GPU).0 == crate::config::Switch::On;
+        let is_gpu_auth = persistent_gpu_on && !is_storage && crate::runtime::iosurface_registry::shadow::with_shadow(|reg| {
+            reg.query_state(mapping_id, 0) == crate::runtime::iosurface_registry::PlaneState::GpuAuthoritative
+        }).unwrap_or(false);
+
+        let persistent_target = if is_gpu_auth {
+            let identity = crate::backend::vulkan::present_identity::surface_identity(state, mapping_id, width, height);
+            let ready = crate::backend::vulkan::engine::resident_content_backing(&identity) != crate::backend::vulkan::engine::ResidentContentBacking::NotReady;
+            if ready {
+                crate::runtime::iosurface_registry::census::note_persistent_gpu_hit();
+                Some(identity)
+            } else {
+                crate::runtime::iosurface_registry::census::note_persistent_gpu_fallback();
+                None
+            }
+        } else {
+            None
+        };
+
         let mut bytes = vec![0u8; need];
-        if serve.is_none() {
+        if serve.is_none() && persistent_target.is_none() {
             if !mapping_write::read_rect_raw_at(
                 state,
                 host,
@@ -2330,7 +2352,7 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
         crate::runtime::iosurface_registry::shadow::note_shadow_legacy_reseed(
             mapping_id,
             0,
-            serve.is_none(),
+            serve.is_none() && persistent_target.is_none(),
         );
         if is_storage {
             crate::runtime::iosurface_registry::shadow::note_shadow_event(
@@ -2360,7 +2382,7 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
                 "compute_stage_tex ref_texture_ok ref={texture_ref} sid={mapping_id} {width}x{height} fmt={stage_fmt:#x} pages={pages_n}"
             ));
         }
-        return Ok(StagedTexture {
+        let mut staged = StagedTexture {
             binding,
             pixel_format: stage_fmt,
             storage_selector,
@@ -2379,7 +2401,11 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
                 }),
                 serve,
             ),
-        });
+        };
+        if let Some(identity) = persistent_target {
+            staged.rail.set_target_identity(identity);
+        }
+        return Ok(staged);
     }
 
     // normal-texture linear. Fail-visible: name which gate rejected (live class:

@@ -401,6 +401,10 @@ impl RailStage for VulkanStage {
             multisample_target: None,
         }
     }
+
+    fn set_target_identity(&mut self, identity: crate::backend::vulkan::engine::TargetIdentity) {
+        self.multisample_target = Some(identity);
+    }
 }
 
 /// Bound on mirror entries per mapping: a ping-pong canvas needs 2, planar

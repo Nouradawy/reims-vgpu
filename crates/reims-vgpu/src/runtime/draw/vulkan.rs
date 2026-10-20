@@ -5699,7 +5699,27 @@ fn resolve_mapper_ref_texture_load_seed<M: HostMemory + HostOps>(
     // The permissive standard, because this rung has one under it: rung 2 reads
     // the surface's own guest pages, so a refusal here costs a copy and a serve
     // this rung should not have made is the only outcome nothing corrects.
-    // TEMP (lab, b040): the mapping door's own parts of `seedx_provide_us`.
+    let persistent_gpu_on = crate::config::read(crate::config::LAB_IOSURFACE_PERSISTENT_GPU).0 == crate::config::Switch::On;
+    let is_gpu_auth = persistent_gpu_on && crate::runtime::iosurface_registry::shadow::with_shadow(|reg| {
+        reg.query_state(mapping_id, 0) == crate::runtime::iosurface_registry::PlaneState::GpuAuthoritative
+    }).unwrap_or(false);
+
+    if is_gpu_auth {
+        let resident_id = crate::backend::vulkan::present_identity::surface_identity(state, mapping_id, w, h);
+        let resident_ready = crate::backend::vulkan::engine::resident_content_backing(&resident_id) != crate::backend::vulkan::engine::ResidentContentBacking::NotReady;
+        if resident_ready {
+            crate::runtime::iosurface_registry::census::note_persistent_gpu_hit();
+            crate::runtime::iosurface_registry::shadow::note_shadow_legacy_reseed(
+                mapping_id,
+                0,
+                false,
+            );
+            return None;
+        } else {
+            crate::runtime::iosurface_registry::census::note_persistent_gpu_fallback();
+        }
+    }
+
     let span = crate::runtime::chain_phase::CostSpan::new("seedx_door_currency_us");
     let guest_replaced = !surface_currency(state, host, mapping_id, w, h)
         .serves(CurrencyStandard::NoContraryEvidence);

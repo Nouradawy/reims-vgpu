@@ -589,10 +589,11 @@ pub(crate) unsafe fn execute_compute_inner(
             // ones this bind names, or the resident is single-sample and would
             // be a descriptor-type mismatch against the shader's declared
             // multisampled image.
+            let persistent_gpu_on = crate::config::read(crate::config::LAB_IOSURFACE_PERSISTENT_GPU).0 == crate::config::Switch::On;
             if !content_ready
-                || width != resource.width
-                || height != resource.height
-                || samples <= 1
+                || (width != resource.width && (!persistent_gpu_on || width < resource.width))
+                || (height != resource.height && (!persistent_gpu_on || height < resource.height))
+                || (samples <= 1 && !persistent_gpu_on)
             {
                 return Err(DrawError::ComputeExecution(
                     ComputeExecutionDecline::MultisampleSampleUnusable {

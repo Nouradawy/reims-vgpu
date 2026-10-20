@@ -1615,7 +1615,9 @@ fn preserve_from_ready_resident(
     resident_ready: bool,
     explicit_seed: bool,
 ) -> bool {
-    !explicit_seed
+    let persistent_gpu_on =
+        crate::config::read(crate::config::LAB_IOSURFACE_PERSISTENT_GPU).0 == crate::config::Switch::On;
+    (!explicit_seed || persistent_gpu_on)
         && resident_ready
         && declared.is_some_and(|declared| declared.preserves_prior_contents())
 }

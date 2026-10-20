@@ -213,7 +213,17 @@ pub(super) fn surface_top<M: HostOps>(
     // Every rung under this one reads the guest's own pages, so a
     // serve this rung refuses is corrected below it rather than
     // held: the ladder takes the permissive standard.
-    let guest_replaced = !currency.serves(CurrencyStandard::NoContraryEvidence);
+    let persistent_gpu_on = crate::config::read(crate::config::LAB_IOSURFACE_PERSISTENT_GPU).0 == crate::config::Switch::On;
+    let is_gpu_auth = persistent_gpu_on && crate::runtime::iosurface_registry::shadow::with_shadow(|reg| {
+        reg.query_state(mid, 0) == crate::runtime::iosurface_registry::PlaneState::GpuAuthoritative
+    }).unwrap_or(false);
+
+    let guest_replaced = if is_gpu_auth {
+        crate::runtime::iosurface_registry::census::note_persistent_gpu_hit();
+        false
+    } else {
+        !currency.serves(CurrencyStandard::NoContraryEvidence)
+    };
     let resident_ready = resident_backing != ResidentContentBacking::NotReady;
     // A ready resident target is authoritative after a product
     // Store — but only while nothing has replaced the bytes it is a
