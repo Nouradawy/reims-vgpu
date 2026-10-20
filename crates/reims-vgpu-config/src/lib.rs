@@ -1674,14 +1674,22 @@ pub const PIPELINE_CACHE_PERSIST: &str = "REIMS_VGPU_PIPELINE_CACHE_PERSIST";
 /// bound (grows past 50 MiB, never discarded over the bound).
 pub const PIPELINE_CACHE_UNBOUNDED: &str = "REIMS_VGPU_PIPELINE_CACHE_UNBOUNDED";
 
-/// **Default on (v13 fix D, icons).** A colour LOAD on a GVA render target
-/// was refused direct GPU writes for good (`GuestRefRefused{WritesNarrowed}`).
-/// On, a mapping counts as released only until it adopts fresh page entries.
+/// **Default on (v13 fix A).** Under `guest_import_surface_writes=released_only`
+/// a mapping counts as released only until it adopts fresh page entries.
 pub const INCARNATION_WRITES: &str = "REIMS_VGPU_INCARNATION_WRITES";
 
 /// **Default on (v14).** A fragment shader that statically uses a
 /// `[[buffer(n)]]` the guest left unbound is served the shared zeroed neutral page.
 pub const UNBOUND_BUFFER_ZERO: &str = "REIMS_VGPU_UNBOUND_BUFFER_ZERO";
+
+/// **Default on (v13 fix D, icons).** A colour LOAD on a GVA render target
+/// whose every seed door came up empty loads from the engine resident that holds
+/// this target's last render when that resident is ready.
+pub const LOAD_SEED_RESCUE: &str = "REIMS_VGPU_LOAD_SEED_RESCUE";
+
+/// **Default on (v14 C2).** An sRGB/UNORM resolve pair (0x51/0x50, 0x47/0x46)
+/// is admitted instead of dropping the draw as render_resolve_target_mismatch.
+pub const MSAA_SRGB_RESOLVE: &str = "REIMS_VGPU_MSAA_SRGB_RESOLVE";
 }
 
 counts! {

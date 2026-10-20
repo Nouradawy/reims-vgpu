@@ -2849,7 +2849,7 @@ pub fn mrt_draw_request_with<M: HostMemory + HostOps, S: crate::runtime::exec::w
                 level: 0,
                 ..att
             };
-            let Some(resolve_target) =
+            let Some(mut resolve_target) =
                 lookup_render_target(state, host, task_id, resolve_attachment)
             else {
                 crate::runtime::drain::note_store_route("mrt_resolve_target_unresolved");
@@ -2887,6 +2887,36 @@ pub fn mrt_draw_request_with<M: HostMemory + HostOps, S: crate::runtime::exec::w
                     // as a literal that happens to match.
                     pipeline_sample_count.unwrap_or(source_target.sample_count),
                 ));
+            }
+            if source_target.width == resolve_target.width
+                && source_target.height == resolve_target.height
+                && source_target.format != resolve_target.format
+            {
+                match srgb_resolve_pair(
+                    source_target.format,
+                    resolve_target.format,
+                    msaa_srgb_resolve_enabled(),
+                ) {
+                    SrgbResolvePair::Admitted => {
+                        crate::runtime::drain::note_store_route(SrgbResolvePair::Admitted.slug());
+                        if crate::observe::first_sight(
+                            "render_resolve_srgb_pair_admitted",
+                            (u64::from(source_target.format) << 16)
+                                | u64::from(resolve_target.format),
+                        ) {
+                            crate::observe::off(format!(
+                                "render_resolve_srgb_pair_admitted pipe={pipeline_ref} \
+                                 source_fmt={:#x} resolve_fmt={:#x} geom={}x{}",
+                                source_target.format,
+                                resolve_target.format,
+                                resolve_target.width,
+                                resolve_target.height
+                            ));
+                        }
+                        resolve_target.format = source_target.format;
+                    }
+                    other => crate::runtime::drain::note_store_route(other.slug()),
+                }
             }
             if source_target.width != resolve_target.width
                 || source_target.height != resolve_target.height
@@ -4812,6 +4842,98 @@ fn load_sampled_rgba_static<M: HostMemory + HostOps>(
         lab_view_miss(state, host, "linear_load");
     }
     loaded
+}
+
+/// v14 C2: whether a resolve whose source and destination formats differ may
+/// still run. Only an sRGB/linear sibling pair of one 8-bit four-channel
+/// layout qualifies; anything else keeps `render_resolve_target_mismatch`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SrgbResolvePair {
+    /// Encode the resolve at the source's declaration.
+    Admitted,
+    /// `REIMS_VGPU_MSAA_SRGB_RESOLVE=0`.
+    Disabled,
+    /// The two formats are not sRGB siblings.
+    NotSiblings,
+}
+
+impl SrgbResolvePair {
+    pub(crate) fn slug(self) -> &'static str {
+        match self {
+            Self::Admitted => "render_resolve_srgb_pair_admitted",
+            Self::Disabled => "render_resolve_srgb_pair_disabled",
+            Self::NotSiblings => "render_resolve_format_not_siblings",
+        }
+    }
+}
+
+/// Pure rule behind [`SrgbResolvePair`].
+pub(crate) fn srgb_resolve_pair(source: u16, resolve: u16, enabled: bool) -> SrgbResolvePair {
+    use crate::protocol::pixel_format::{
+        MTL_FORMAT_BGRA8_UNORM, MTL_FORMAT_BGRA8_UNORM_SRGB, MTL_FORMAT_RGBA8_UNORM,
+        MTL_FORMAT_RGBA8_UNORM_SRGB,
+    };
+    let siblings = matches!(
+        (source, resolve),
+        (MTL_FORMAT_BGRA8_UNORM_SRGB, MTL_FORMAT_BGRA8_UNORM)
+            | (MTL_FORMAT_BGRA8_UNORM, MTL_FORMAT_BGRA8_UNORM_SRGB)
+            | (MTL_FORMAT_RGBA8_UNORM_SRGB, MTL_FORMAT_RGBA8_UNORM)
+            | (MTL_FORMAT_RGBA8_UNORM, MTL_FORMAT_RGBA8_UNORM_SRGB)
+    );
+    if !siblings {
+        SrgbResolvePair::NotSiblings
+    } else if !enabled {
+        SrgbResolvePair::Disabled
+    } else {
+        SrgbResolvePair::Admitted
+    }
+}
+
+/// `REIMS_VGPU_MSAA_SRGB_RESOLVE`, read once (default on).
+pub(crate) fn msaa_srgb_resolve_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| match crate::config::read(crate::config::MSAA_SRGB_RESOLVE) {
+        (crate::config::Switch::Off, _) => {
+            crate::observe::fail(
+                "msaa_srgb_resolve_disabled reason=disabled_by_env (v13: an sRGB/UNORM resolve pair drops the draw)",
+            );
+            false
+        }
+        (crate::config::Switch::Unrecognized, value) => {
+            crate::observe::fail(format!(
+                "msaa_srgb_resolve reason=msaa_srgb_resolve_env_unrecognized value={:?} (kept on)",
+                value.unwrap_or_default()
+            ));
+            true
+        }
+        _ => true,
+    })
+}
+
+#[cfg(test)]
+mod srgb_resolve_pair_tests {
+    use super::{srgb_resolve_pair, SrgbResolvePair};
+
+    #[test]
+    fn sibling_pairs_admit_when_enabled() {
+        assert_eq!(srgb_resolve_pair(0x51, 0x50, true), SrgbResolvePair::Admitted);
+        assert_eq!(srgb_resolve_pair(0x50, 0x51, true), SrgbResolvePair::Admitted);
+        assert_eq!(srgb_resolve_pair(0x47, 0x46, true), SrgbResolvePair::Admitted);
+        assert_eq!(srgb_resolve_pair(0x46, 0x47, true), SrgbResolvePair::Admitted);
+    }
+
+    #[test]
+    fn non_siblings_decline() {
+        assert_eq!(srgb_resolve_pair(0x51, 0x46, true), SrgbResolvePair::NotSiblings);
+        assert_eq!(srgb_resolve_pair(0x50, 0x46, true), SrgbResolvePair::NotSiblings);
+        assert_eq!(srgb_resolve_pair(0x51, 0x51, true), SrgbResolvePair::NotSiblings);
+        assert_eq!(srgb_resolve_pair(0x73, 0x50, true), SrgbResolvePair::NotSiblings);
+    }
+
+    #[test]
+    fn disabled_env_declines_siblings() {
+        assert_eq!(srgb_resolve_pair(0x51, 0x50, false), SrgbResolvePair::Disabled);
+    }
 }
 
 #[cfg(test)]

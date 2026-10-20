@@ -5629,7 +5629,8 @@ pub(super) fn try_gva_target_guest_seed<M: HostMemory + HostOps>(
     if !guest_run_alias_available(host) {
         return None;
     }
-    let layout = pixel_format::store_texel_order(c0.format)?;
+    // v13 fix D: `store_texel_order`, plus R16Float when the rescue is on.
+    let layout = gva_seed_texel_layout(c0.format, load_seed_rescue_enabled())?;
     let source_format = translate::pixel::vk_texel_layout(layout);
     if source_format != target_format {
         return None;
@@ -8401,6 +8402,99 @@ fn retained_resident_is_ready(
         ) => true,
         Some(ResidentContentBacking::NotReady) => false,
         None => registry_query(),
+    }
+}
+
+/// `REIMS_VGPU_LOAD_SEED_RESCUE`, read once (default on).
+pub(crate) fn load_seed_rescue_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| match crate::config::read(crate::config::LOAD_SEED_RESCUE) {
+        (crate::config::Switch::Off, _) => {
+            crate::observe::fail(
+                "load_seed_rescue_disabled reason=disabled_by_env (v12: a LOAD with no seed begins undefined; R16Float targets take no native seed)",
+            );
+            false
+        }
+        (crate::config::Switch::Unrecognized, value) => {
+            crate::observe::fail(format!(
+                "load_seed_rescue reason=load_seed_rescue_env_unrecognized value={:?} (kept on)",
+                value.unwrap_or_default()
+            ));
+            true
+        }
+        _ => true,
+    })
+}
+
+/// v13 fix D: the texel layout a GVA colour LOAD may take straight out of its
+/// guest pages. [`pixel_format::store_texel_order`] is the v12 answer;
+/// with the rescue on, `R16Float` is added. It has no store order (no sampled
+/// class names its texel, which is that table's own membership rule), but its
+/// guest pages hold its own two-byte texels and the resident is created at
+/// `R16_SFLOAT`, so the byte copy is exact. Without it every R16Float icon
+/// coverage LOAD began undefined (`load_seed_lost door=none fmt=0x19`).
+pub(super) fn gva_seed_texel_layout(
+    format: u16,
+    rescue: bool,
+) -> Option<crate::protocol::pixel_format::TexelLayout> {
+    use crate::protocol::pixel_format::{self, TexelLayout};
+    if format == pixel_format::MTL_FORMAT_R16_FLOAT {
+        return rescue.then_some(TexelLayout::R16Float);
+    }
+    pixel_format::store_texel_order(format)
+}
+
+/// v13 fix D: what a colour LOAD that arrived with no seed does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LostSeedRescue {
+    /// A seed was found; nothing to rescue.
+    NotNeeded,
+    /// `REIMS_VGPU_LOAD_SEED_RESCUE=0`: v12 behaviour, the pass begins undefined.
+    Disabled,
+    /// A mapper-ref-texture target; its doors are the mapping's, not this one.
+    NotGva,
+    /// No resident identity can be named for this target.
+    NoIdentity,
+    /// The resident exists in name but holds no finished content.
+    ResidentNotReady,
+    /// Load from the engine resident that holds this target's last render.
+    Rescued,
+}
+
+impl LostSeedRescue {
+    pub(super) fn slug(self) -> &'static str {
+        match self {
+            Self::NotNeeded => "load_seed_rescue_not_needed",
+            Self::Disabled => "load_seed_rescue_off",
+            Self::NotGva => "load_seed_rescue_refused_not_gva",
+            Self::NoIdentity => "load_seed_rescue_refused_no_identity",
+            Self::ResidentNotReady => "load_seed_rescue_refused_resident_not_ready",
+            Self::Rescued => "load_seed_rescued_from_resident",
+        }
+    }
+}
+
+/// Pure decision for [`LostSeedRescue`]. `resident_ready` is `None` when no
+/// identity could be named, else whether that resident holds finished content.
+pub(super) fn lost_seed_rescue_decision(
+    enabled: bool,
+    seeded: bool,
+    mapping_id: u32,
+    resident_ready: Option<bool>,
+) -> LostSeedRescue {
+    if seeded {
+        return LostSeedRescue::NotNeeded;
+    }
+    if !enabled {
+        return LostSeedRescue::Disabled;
+    }
+    if mapping_id != 0 {
+        return LostSeedRescue::NotGva;
+    }
+    match resident_ready {
+        None => LostSeedRescue::NoIdentity,
+        Some(false) => LostSeedRescue::ResidentNotReady,
+        Some(true) => LostSeedRescue::Rescued,
     }
 }
 
@@ -14504,8 +14598,12 @@ pub(super) fn try_metal2vulkan_draw_with<M: HostMemory + HostOps>(
                     // content out of its own pages at its own width before the
                     // eight-bit colour seed is considered; see
                     // `try_gva_target_guest_seed`.
+                    // v13 fix D: R16Float joins the native seed (its eight-bit
+                    // seed does not exist at all; see `gva_seed_texel_layout`).
                     let native_seed = (c0.mapping_id == 0
-                        && gva_store_needs_native_texels(c0.format))
+                        && (gva_store_needs_native_texels(c0.format)
+                            || (load_seed_rescue_enabled()
+                                && c0.format == crate::protocol::pixel_format::MTL_FORMAT_R16_FLOAT)))
                     .then(|| {
                         acc.exclusive().and_then(|state| {
                             try_gva_target_guest_seed(
@@ -14815,15 +14913,56 @@ pub(super) fn try_metal2vulkan_draw_with<M: HostMemory + HostOps>(
                         // being dropped; a DontCare that arrives empty is what
                         // the guest declared, and folding the two together would
                         // retire the one counter that names the defect.
-                        note_load_seed_outcome(
-                            seed_door,
-                            target_rgba8.is_some()
-                                || target_guest_seed.is_some()
-                                || zero_seed_cleared,
-                            c0,
-                            w,
-                            h,
+                        // v13 fix D: a GVA LOAD that found no door may still rescue
+                        // its contents from the resident holding this target's
+                        // last render when that resident is ready. This is what
+                        // SpringBoard's multi-pass icons and Skia Graphite
+                        // filter passes (454 BGRA8 targets at 32..224 px, all
+                        // `load_seed_lost door=none`) needed.
+                        let seeded = target_rgba8.is_some()
+                            || target_guest_seed.is_some()
+                            || zero_seed_cleared;
+                        let rescue_enabled = !seeded && load_seed_rescue_enabled();
+                        let rescue_identity = if rescue_enabled && c0.mapping_id == 0 {
+                            gva_chain_identity(req)
+                        } else {
+                            None
+                        };
+                        let rescue_ready = rescue_identity
+                            .as_ref()
+                            .map(|id| gva_resident_ready(acc.shared(), req.task_id, c0.texture_ref, id));
+                        let rescue = lost_seed_rescue_decision(
+                            rescue_enabled || seeded,
+                            seeded,
+                            c0.mapping_id,
+                            rescue_ready,
                         );
+                        if rescue == LostSeedRescue::Rescued {
+                            crate::runtime::drain::note_store_route(rescue.slug());
+                            chain_load_from_target = true;
+                            gva_load_identity = rescue_identity;
+                        } else {
+                            note_load_seed_outcome(seed_door, seeded, c0, w, h);
+                            if !matches!(
+                                rescue,
+                                LostSeedRescue::NotNeeded | LostSeedRescue::Disabled
+                            ) {
+                                crate::runtime::drain::note_store_route(rescue.slug());
+                                if crate::observe::first_sight(
+                                    "load_seed_rescue_refused",
+                                    c0.target_gva ^ ((c0.texture_ref as u64) << 40),
+                                ) {
+                                    crate::observe::fail(format!(
+                                        "load_seed_rescue_refused reason={} gva={:#x} ref={} mid={} {w}x{h} fmt={:#x}",
+                                        rescue.slug(),
+                                        c0.target_gva,
+                                        c0.texture_ref,
+                                        c0.mapping_id,
+                                        c0.format
+                                    ));
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -23869,6 +24008,89 @@ mod vulkan_icb_tests {
             encode_icb_execute_and_writeback(&mut state, &mut host, &req, 9999, 0, 1),
             EncodeStatus::BadArgs("icb_fill_not_cached")
         );
+    }
+}
+
+#[cfg(test)]
+mod load_seed_rescue_tests {
+    use super::{gva_seed_texel_layout, lost_seed_rescue_decision, LostSeedRescue};
+    use crate::protocol::pixel_format::{self, TexelLayout};
+
+    #[test]
+    fn a_seeded_load_needs_no_rescue() {
+        assert_eq!(
+            lost_seed_rescue_decision(true, true, 0, Some(true)),
+            LostSeedRescue::NotNeeded
+        );
+        assert_eq!(
+            lost_seed_rescue_decision(false, true, 7, None),
+            LostSeedRescue::NotNeeded
+        );
+    }
+
+    #[test]
+    fn the_kill_switch_restores_v12() {
+        assert_eq!(
+            lost_seed_rescue_decision(false, false, 0, Some(true)),
+            LostSeedRescue::Disabled
+        );
+    }
+
+    #[test]
+    fn a_seedless_gva_load_rescues_only_from_a_ready_resident() {
+        assert_eq!(
+            lost_seed_rescue_decision(true, false, 0, Some(true)),
+            LostSeedRescue::Rescued
+        );
+        assert_eq!(
+            lost_seed_rescue_decision(true, false, 0, Some(false)),
+            LostSeedRescue::ResidentNotReady
+        );
+        assert_eq!(
+            lost_seed_rescue_decision(true, false, 0, None),
+            LostSeedRescue::NoIdentity
+        );
+        assert_eq!(
+            lost_seed_rescue_decision(true, false, 9, Some(true)),
+            LostSeedRescue::NotGva
+        );
+    }
+
+    #[test]
+    fn every_outcome_has_its_own_slug() {
+        let all = [
+            LostSeedRescue::NotNeeded,
+            LostSeedRescue::Disabled,
+            LostSeedRescue::NotGva,
+            LostSeedRescue::NoIdentity,
+            LostSeedRescue::ResidentNotReady,
+            LostSeedRescue::Rescued,
+        ];
+        let mut slugs: Vec<&str> = all.iter().map(|o| o.slug()).collect();
+        slugs.sort_unstable();
+        slugs.dedup();
+        assert_eq!(slugs.len(), all.len());
+    }
+
+    #[test]
+    fn r16float_takes_a_native_seed_only_with_the_rescue_on() {
+        assert_eq!(
+            gva_seed_texel_layout(pixel_format::MTL_FORMAT_R16_FLOAT, true),
+            Some(TexelLayout::R16Float)
+        );
+        assert_eq!(
+            gva_seed_texel_layout(pixel_format::MTL_FORMAT_R16_FLOAT, false),
+            None
+        );
+        // The other store-order formats are unchanged either way.
+        for fmt in 0u16..=0x300 {
+            if fmt != pixel_format::MTL_FORMAT_R16_FLOAT {
+                if let Some(order) = pixel_format::store_texel_order(fmt) {
+                    assert_eq!(gva_seed_texel_layout(fmt, true), Some(order));
+                    assert_eq!(gva_seed_texel_layout(fmt, false), Some(order));
+                }
+            }
+        }
     }
 }
 
