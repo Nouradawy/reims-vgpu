@@ -1642,6 +1642,16 @@ pub const LAB_FRONTBUFFER_LATCH: &str = "REIMS_VGPU_LAB_FRONTBUFFER_LATCH";
 /// Unset or `off` installs nothing. Stays opt-in until a title-bar drag A/B
 /// with and without it says otherwise.
 pub const LAB_WIN32_DRAG_HOOK: &str = "REIMS_VGPU_LAB_WIN32_DRAG_HOOK";
+
+/// **Default off (lab).** MAXZVER/reims-vgpu#3 Step B (port of 570c6ab8). `on`
+/// serves the guest's cursor doorbell (gfx 0x1220, written on every hardware
+/// cursor move) on the device's lock-free write rail instead of queueing it
+/// behind the drain tranche: the IRQ bit, the 4-byte cursor sample, the cursor
+/// mirror, `CursorUpdate` + `IrqGfx` and the host-window cursor position, all
+/// without the device lock. Unset or `off` keeps the queued/locked arm.
+/// Logs `reims-cursor: lockfree on|off` once; per second the `store_routes`
+/// line counts `lock_free_cursor_doorbell` (and `..._fallback_*`).
+pub const LAB_CURSOR_LOCKFREE: &str = "REIMS_VGPU_LAB_CURSOR_LOCKFREE";
 }
 
 counts! {
