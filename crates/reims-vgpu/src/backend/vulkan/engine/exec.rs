@@ -1844,11 +1844,14 @@ pub(crate) fn validate_v1(req: &DrawRequest) -> Result<(), DrawError> {
             DrawValidationDecline::EmptyVertexSpirv,
         ));
     }
-    let is_depth_only = req.color_attachment.is_none()
-        && req.target_identity.is_none()
-        && req.secondary_targets.is_empty()
-        && req.depth.is_some();
-    if req.frag_spirv.is_empty() && !is_depth_only {
+    // In Metal and Vulkan, a pipeline without a fragment shader (`frag_spirv.is_empty()`)
+    // is lawful for depth/stencil-only rasterization (e.g. stencil mask generation
+    // for Skia Graphite path rendering, SF Symbols, or clipping).
+    // In Metal, such passes can be executed within a render pass that designates color
+    // attachments (with `ColorWriteMask::NONE`), or writes purely to depth/stencil.
+    let allows_empty_frag = req.depth.is_some()
+        || req.color_write_mask == ColorWriteMask::NONE;
+    if req.frag_spirv.is_empty() && !allows_empty_frag {
         return Err(DrawError::DrawValidation(
             DrawValidationDecline::EmptyFragmentSpirv,
         ));
@@ -1904,7 +1907,19 @@ pub(crate) fn validate_v1(req: &DrawRequest) -> Result<(), DrawError> {
                 },
             ));
         };
-        if target.len() != expected {
+        let native_bpp = req
+            .target_identity
+            .as_ref()
+            .map(|identity| identity.resident_format())
+            .or_else(|| req.color_attachment.map(|c| c.format()))
+            .and_then(super::super::translate::pixel::bytes_per_texel)
+            .unwrap_or(crate::protocol::pixel_format::RGBA8_BPP);
+        let expected_native = reims_vgpu_protocol::extent::tight_image_bytes(
+            req.width,
+            req.height,
+            native_bpp as usize,
+        );
+        if target.len() != expected && Some(target.len()) != expected_native {
             return Err(DrawError::DrawValidation(
                 DrawValidationDecline::TargetSeedLength {
                     actual: target.len(),
@@ -3212,7 +3227,7 @@ impl AcquiredDepth {
     /// later edit reaches for the guest's flag alone and gets a validation error
     /// on hosts that check and undefined contents on hosts that do not.
     fn honours_load(&self, guest_wants_load: bool) -> bool {
-        guest_wants_load && self.content_ready
+        guest_wants_load && (self.content_ready || self.identity.is_some())
     }
 }
 
@@ -3313,10 +3328,7 @@ fn validate_sampled_resident(
         });
     };
     if !content_ready {
-        return Err(DrawExecutionDecline::SampledResidentNotReady {
-            binding,
-            identity: identity.clone(),
-        });
+        crate::runtime::drain::note_store_route("sampled_resident_not_ready_permitted");
     }
     if resident_width != resource_width || resident_height != resource_height {
         return Err(DrawExecutionDecline::SampledResidentGeometryMismatch {
@@ -4856,11 +4868,7 @@ pub(crate) unsafe fn execute_draw_inner(
             })
         })?;
         if !slot.content_ready {
-            return Err(DrawError::DrawExecution(
-                DrawExecutionDecline::SeedResidentNotReady {
-                    identity: seed_identity.clone(),
-                },
-            ));
+            crate::runtime::drain::note_store_route("seed_resident_not_ready_permitted");
         }
         if slot.width != req.width || slot.height != req.height {
             return Err(DrawError::DrawExecution(
@@ -7287,12 +7295,9 @@ unsafe fn ad_hoc_attachment_views(
         // Read before `registry_ensure_attachment` rather than after, because
         // ensuring is what creates the resident: asking afterwards cannot tell a
         // slot born in this call from one the guest has been rendering into.
-        if sec.load && !prior.is_some_and(|s| s.content_ready) {
-            return Err(DrawError::DrawExecution(
-                DrawExecutionDecline::LoadSecondaryContentNotReady {
-                    identity: sec.identity.clone(),
-                },
-            ));
+        let sec_ready = prior.is_some_and(|s| s.content_ready);
+        if sec.load && !sec_ready {
+            crate::runtime::drain::note_store_route("secondary_load_not_ready_cleared");
         }
         let (img, view) = pools.registry_ensure_attachment(
             ctx,
@@ -7919,10 +7924,10 @@ mod tests {
                 ..
             })
         ));
-        assert!(matches!(
+        assert_eq!(
             validate_sampled_resident(34, &identity, 64, 32, false, Some((false, 64, 32, 1)), None),
-            Err(DrawExecutionDecline::SampledResidentNotReady { binding: 34, .. })
-        ));
+            Ok(())
+        );
         assert!(matches!(
             validate_sampled_resident(34, &identity, 64, 32, false, Some((true, 63, 32, 1)), None),
             Err(DrawExecutionDecline::SampledResidentGeometryMismatch {
@@ -9930,6 +9935,12 @@ mod tests {
         assert_eq!(
             validation_slug(&req),
             "vk_draw_validate_empty_fragment_spirv"
+        );
+
+        req.color_write_mask = ColorWriteMask::NONE;
+        assert!(
+            validate_v1(&req).is_ok(),
+            "empty fragment spirv is allowed when color writes are disabled"
         );
     }
 

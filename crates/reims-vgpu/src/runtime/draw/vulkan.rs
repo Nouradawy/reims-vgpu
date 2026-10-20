@@ -3496,7 +3496,11 @@ pub(super) fn fragment_attachment_alias_sample<'a>(
             // A secondary has no CPU seed and no chain flag of its own: its Load
             // is always the registry resident (`build_secondary_targets`), so
             // that resident is what the pass's earlier draws left there.
-            if req.chain_from_resident || req.gva_load_from_resident || color.slot != 0 {
+            if req.chain_from_resident
+                || req.gva_load_from_resident
+                || load_seed_rescue_enabled()
+                || color.slot != 0
+            {
                 return Some((
                     color.width,
                     color.height,
@@ -16025,11 +16029,7 @@ pub(super) fn try_metal2vulkan_draw_with<M: HostMemory + HostOps>(
         }
         crate::runtime::chain_phase::enter(crate::runtime::chain_phase::Phase::Assemble);
         resources.vert_spirv = v_words;
-        resources.frag_spirv = if pd.fragment_func_ref == 0 {
-            std::sync::Arc::new(Vec::new())
-        } else {
-            f_words
-        };
+        resources.frag_spirv = f_words;
         resources.vert_used_descriptor_bindings = v_variant.used_descriptor_bindings.clone();
         resources.frag_used_descriptor_bindings = f_variant.used_descriptor_bindings.clone();
         resources.width = w;

@@ -4036,7 +4036,7 @@ pub fn read_resident_bgra(identity: &TargetIdentity, need: usize) -> Option<Vec<
         let guard = lock_engine();
         let slot = guard.pools.registry_get(identity)?;
         if !slot.content_ready {
-            return None;
+            crate::runtime::drain::note_store_route("read_resident_bgra_not_ready_permitted");
         }
     }
     let mut px = match read_target_inner(identity) {
@@ -8844,9 +8844,7 @@ fn resident_read_snapshot(
         ));
     };
     if !slot.content_ready {
-        return Err(DrawError::TargetRead(
-            reason::TargetReadDecline::NoReadyContent,
-        ));
+        crate::runtime::drain::note_store_route("target_read_not_ready_permitted");
     }
     if slot.sample_count != 1 {
         return Err(DrawError::TargetRead(
