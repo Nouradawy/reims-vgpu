@@ -12265,7 +12265,7 @@ pub(super) fn try_metal2vulkan_draw_with<M: HostMemory + HostOps>(
                 req.base_instance,
                 req.primitive_type,
                 req.indexed.as_ref().map(|i| (i.index_type, i.index_count, i.index_buffer_offset, i.base_vertex)),
-                req.merged.as_ref().map_or(0, |m| m.subs.len()),
+                0,
                 req.continues_render_pass,
                 req.depth_stencil_ref,
                 req.stencil_ref,
