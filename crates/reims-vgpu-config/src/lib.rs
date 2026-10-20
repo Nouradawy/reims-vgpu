@@ -1652,6 +1652,11 @@ pub const LAB_WIN32_DRAG_HOOK: &str = "REIMS_VGPU_LAB_WIN32_DRAG_HOOK";
 /// Logs `reims-cursor: lockfree on|off` once; per second the `store_routes`
 /// line counts `lock_free_cursor_doorbell` (and `..._fallback_*`).
 pub const LAB_CURSOR_LOCKFREE: &str = "REIMS_VGPU_LAB_CURSOR_LOCKFREE";
+
+/// **Default off (lab).** Phase 0 surface-churn and reseed census. Enables
+/// telemetry extras (e.g., staging data hashing to detect byte-identical
+/// compute input reseeds) without changing graphics output or rendering behavior.
+pub const LAB_IOSURFACE_CENSUS: &str = "REIMS_VGPU_LAB_IOSURFACE_CENSUS";
 }
 
 counts! {

@@ -6006,6 +6006,7 @@ pub(super) fn load_ref_texture_view_rgba<M: HostMemory + HostOps>(
     view: objects::RefTextureView,
 ) -> Option<LoadedRefTextureView> {
     let fail = |d: RefTextureViewDecline| -> Option<LoadedRefTextureView> {
+        crate::runtime::drain::note_store_route(d.slug());
         crate::observe::Emit::decline("ref_texture_draw_view", &d)
             .field("task", task_id)
             .field("ref", texture_ref)
@@ -6267,6 +6268,8 @@ pub(super) fn load_ref_texture_view_rgba<M: HostMemory + HostOps>(
         },
         entry_bytes,
     );
+    crate::runtime::drain::note_store_route("ref_texture_view_resolved");
+    crate::runtime::drain::note_store_route_n("ref_texture_view_bytes", native_len as u64);
     Some((
         view.width,
         view.height,
@@ -13828,6 +13831,7 @@ pub(super) fn try_metal2vulkan_draw_with<M: HostMemory + HostOps>(
             // A repair that succeeded, not a success: the shader samples a
             // texture whose contents this device invented, so it stays on the
             // fail channel and the reliance stays measurable.
+            crate::runtime::drain::note_store_route("draw_binding_placeholder_frag_neutral");
             crate::observe::fail(format!(
                 "shader_resource_declared_unbound \
                  reason=frag_neutral_texture_substituted \

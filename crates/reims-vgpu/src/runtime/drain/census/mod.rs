@@ -3844,6 +3844,27 @@ pub fn note_store_route_us(name: &'static str, us: u64) {
     note_store_route_n(name, us);
 }
 
+static RESEED_HASHES: std::sync::Mutex<Option<reims_vgpu_core::fasthash::FxHashMap<u32, u64>>> =
+    std::sync::Mutex::new(None);
+
+/// Record and compare a hash of a compute input's guest staging data under `REIMS_VGPU_LAB_IOSURFACE_CENSUS`.
+pub fn note_compute_reseed_hash(mapping_id: u32, hash: u64) {
+    if let Ok(mut lock) = RESEED_HASHES.lock() {
+        let map = lock.get_or_insert_with(reims_vgpu_core::fasthash::FxHashMap::default);
+        if let Some(&prev) = map.get(&mapping_id) {
+            if prev == hash {
+                note_store_route("compute_reseed_identical");
+            } else {
+                note_store_route("compute_reseed_changed");
+                map.insert(mapping_id, hash);
+            }
+        } else {
+            note_store_route("compute_reseed_first");
+            map.insert(mapping_id, hash);
+        }
+    }
+}
+
 /// Read one route's count out of the live window, for tests that assert a
 /// census fired rather than trusting that it was wired up.
 ///

@@ -7932,6 +7932,11 @@ fn apply_map_family<H: HostMemory + HostOps>(
     // its pages (b298: landing every parked frame on every map-family command
     // landed all of them ~10 ms later, on the commands WindowServer waits for).
     lab_park_land_for_map_family(state, host, packet, family);
+    match family {
+        MapFamily::DeleteIOSurfaceBacking2 => note_store_route("iosurface_delete_backing"),
+        MapFamily::MapMemory2 => note_store_route("iosurface_map_memory"),
+        _ => {}
+    }
     if family != MapFamily::MapMemory2 || crate::runtime::writeback_debt::lab_map_land_all() {
         if lab_land_reach() && deferred_landing_disjoint(state, &*host, packet, family) {
             note_store_route("lab_land_reach_skipped");

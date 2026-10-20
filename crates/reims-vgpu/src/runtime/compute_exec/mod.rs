@@ -2285,8 +2285,8 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
             ));
         }
         let mut bytes = vec![0u8; need];
-        if serve.is_none()
-            && !mapping_write::read_rect_raw_at(
+        if serve.is_none() {
+            if !mapping_write::read_rect_raw_at(
                 state,
                 host,
                 mapping_id,
@@ -2304,14 +2304,23 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
                 },
                 &mut bytes,
                 tight,
-            )
-        {
-            crate::observe::fail(format!(
-                "compute_stage_tex mapper_ref_texture_fail reason=read mapping={mapping_id} {width}x{height} off={surface_offset} bpr={surface_bpr} span_end={span_end} pages={pages_n}"
-            ));
-            return Err(ComputeStatus::GuestIo(
-                "compute_stage_tex_mapper_ref_texture_read",
-            ));
+            ) {
+                crate::observe::fail(format!(
+                    "compute_stage_tex mapper_ref_texture_fail reason=read mapping={mapping_id} {width}x{height} off={surface_offset} bpr={surface_bpr} span_end={span_end} pages={pages_n}"
+                ));
+                return Err(ComputeStatus::GuestIo(
+                    "compute_stage_tex_mapper_ref_texture_read",
+                ));
+            }
+            crate::runtime::drain::note_store_route("compute_stage_reseed_read");
+            crate::runtime::drain::note_store_route_n("compute_stage_reseed_bytes", need as u64);
+            if crate::config::read(crate::config::LAB_IOSURFACE_CENSUS).0 == crate::config::Switch::On {
+                use std::hash::Hasher as _;
+                let mut hasher = reims_vgpu_core::fasthash::FxHasher::default();
+                hasher.write(&bytes);
+                let hash = hasher.finish();
+                crate::runtime::drain::note_compute_reseed_hash(mapping_id, hash);
+            }
         }
         let writeback = if is_storage {
             TextureWriteback::MapperRefTexture {
