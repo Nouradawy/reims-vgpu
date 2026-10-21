@@ -127,6 +127,7 @@ pub mod fnv;
 pub mod gva;
 pub mod gva_resolve;
 pub mod info_reply;
+pub mod iosurface_events;
 pub mod iosurface_pages;
 pub mod mipmap;
 pub mod packets;
