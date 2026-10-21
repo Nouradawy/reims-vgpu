@@ -5,10 +5,14 @@
 //! tracked via a pure state machine and change-detection protocols.
 
 pub mod census;
+pub mod readback;
 pub mod shadow;
 pub mod state;
+pub mod upload;
 
 #[cfg(test)]
 mod tests;
 
+pub use readback::{complete_readback, evaluate_lock_sync, evaluate_readback_req, ReadbackAction};
 pub use state::{Action, ActionList, PlaneEvent, PlaneState};
+pub use upload::{compute_upload_plan, StrideMode, UploadDecision, UploadPlan, UploadRegion};

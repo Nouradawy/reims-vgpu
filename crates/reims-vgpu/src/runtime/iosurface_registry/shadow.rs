@@ -1,9 +1,12 @@
-//! Phase 1 Shadow Registry: pure shadow validation alongside the legacy pipeline.
+//! Phase 1 Shadow Registry & Phase 4 Dirty Tracking Narrowing:
+//! shadow validation alongside the legacy pipeline, and selective dirty-query narrowing
+//! for GPU-authoritative IOSurfaces.
 
 use std::sync::Mutex;
 use reims_vgpu_core::fasthash::FxHashMap;
 use super::census;
 use super::state::{transition, Action, PlaneEvent, PlaneState};
+use crate::runtime::host::HostOps;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ShadowKey {
@@ -13,6 +16,8 @@ pub struct ShadowKey {
 
 pub struct ShadowRegistry {
     planes: FxHashMap<ShadowKey, PlaneState>,
+    tokens: FxHashMap<ShadowKey, u64>,
+    wp_fallbacks: FxHashMap<ShadowKey, bool>,
 }
 
 impl Default for ShadowRegistry {
@@ -25,16 +30,81 @@ impl ShadowRegistry {
     pub fn new() -> Self {
         Self {
             planes: FxHashMap::default(),
+            tokens: FxHashMap::default(),
+            wp_fallbacks: FxHashMap::default(),
         }
     }
 
+    pub fn register_surface(&mut self, surface_id: u32, plane: u32) {
+        self.planes.insert(ShadowKey { surface_id, plane }, PlaneState::Created);
+    }
+
+    pub fn register_token(&mut self, surface_id: u32, plane: u32, token: u64, wp_fallback: bool) {
+        let key = ShadowKey { surface_id, plane };
+        self.tokens.insert(key, token);
+        if wp_fallback {
+            self.wp_fallbacks.insert(key, true);
+        }
+    }
+
+    pub fn get_token(&self, surface_id: u32, plane: u32) -> Option<u64> {
+        self.tokens.get(&ShadowKey { surface_id, plane }).copied()
+    }
+
+    pub fn is_wp_fallback(&self, surface_id: u32, plane: u32) -> bool {
+        self.wp_fallbacks.get(&ShadowKey { surface_id, plane }).copied().unwrap_or(false)
+    }
+
     pub fn on_event(&mut self, surface_id: u32, plane: u32, event: PlaneEvent) -> Option<PlaneState> {
+        self.on_event_with_host(surface_id, plane, event, None)
+    }
+
+    pub fn on_event_with_host(
+        &mut self,
+        surface_id: u32,
+        plane: u32,
+        event: PlaneEvent,
+        mut host: Option<&mut dyn HostOps>,
+    ) -> Option<PlaneState> {
         let key = ShadowKey { surface_id, plane };
         let current = self.planes.get(&key).copied().unwrap_or(PlaneState::Created);
         match transition(current, event) {
             Ok((next, actions)) => {
+                let token = self.tokens.get(&key).copied().unwrap_or(0);
+                let is_wp = self.wp_fallbacks.get(&key).copied().unwrap_or(false);
+
+                if let Some(h) = host.as_deref_mut() {
+                    if token != 0 {
+                        let narrow_on = crate::config::read(crate::config::LAB_DIRTY_NARROW).0 == crate::config::Switch::On;
+                        if narrow_on {
+                            match next {
+                                PlaneState::GpuAuthoritative => {
+                                    // When GPU is authoritative, narrow out dirty query tracking unless WP fallback is designated.
+                                    h.set_dirty_tracking(token, false);
+                                    if is_wp {
+                                        h.set_wp_fallback(token, true);
+                                    }
+                                }
+                                PlaneState::CpuDirty | PlaneState::Created | PlaneState::Syncing => {
+                                    // Guest CPU may write or upload needed; ensure active tracking.
+                                    h.set_dirty_tracking(token, true);
+                                    if is_wp {
+                                        h.set_wp_fallback(token, true);
+                                    }
+                                }
+                                PlaneState::Released => {
+                                    h.set_dirty_tracking(token, false);
+                                    h.set_wp_fallback(token, false);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if actions.contains(Action::FreeImage) {
                     self.planes.remove(&key);
+                    self.tokens.remove(&key);
+                    self.wp_fallbacks.remove(&key);
                 } else {
                     self.planes.insert(key, next);
                 }
@@ -96,6 +166,49 @@ where
 pub fn note_shadow_event(surface_id: u32, plane: u32, event: PlaneEvent) {
     with_shadow(|reg| {
         reg.on_event(surface_id, plane, event);
+    });
+}
+
+/// Record a shadow event with optional host ops notification if shadow registry is active.
+pub fn note_shadow_event_with_host(
+    surface_id: u32,
+    plane: u32,
+    event: PlaneEvent,
+    host: Option<&mut dyn HostOps>,
+) {
+    with_shadow(|reg| {
+        reg.on_event_with_host(surface_id, plane, event, host);
+    });
+}
+
+/// Associate a dirty tracking token and WP fallback flag with a surface plane in shadow registry.
+pub fn note_shadow_token(
+    surface_id: u32,
+    plane: u32,
+    token: u64,
+    wp_fallback: bool,
+    mut host: Option<&mut dyn HostOps>,
+) {
+    with_shadow(|reg| {
+        reg.register_token(surface_id, plane, token, wp_fallback);
+        if let Some(h) = host.as_deref_mut() {
+            let narrow_on = crate::config::read(crate::config::LAB_DIRTY_NARROW).0 == crate::config::Switch::On;
+            if narrow_on && token != 0 {
+                if wp_fallback {
+                    h.set_wp_fallback(token, true);
+                }
+                let st = reg.query_state(surface_id, plane);
+                let track = st != PlaneState::GpuAuthoritative;
+                h.set_dirty_tracking(token, track);
+            }
+        }
+    });
+}
+
+/// Record a surface creation in shadow registry if active.
+pub fn note_shadow_create(surface_id: u32, plane: u32) {
+    with_shadow(|reg| {
+        reg.register_surface(surface_id, plane);
     });
 }
 

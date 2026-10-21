@@ -102,3 +102,46 @@ fn test_shadow_registry_lifecycle_and_agreement() {
     // After release + drain, entry is cleaned up
     assert_eq!(shadow.query_state(sid, plane), PlaneState::Created);
 }
+
+#[test]
+fn test_shadow_narrow_dirty_tracking_with_host() {
+    use crate::runtime::host::FakeHost;
+    std::env::set_var("REIMS_VGPU_LAB_DIRTY_NARROW", "1");
+
+    let mut shadow = ShadowRegistry::new();
+    let mut host = FakeHost::new();
+    let sid = 42;
+    let plane = 0;
+    let token = 0x1234;
+
+    shadow.register_surface(sid, plane);
+    shadow.register_token(sid, plane, token, true);
+
+    // 1. GPU writes surface 42 plane 0 -> transitions to GpuAuthoritative
+    let next = shadow.on_event_with_host(sid, plane, PlaneEvent::GpuWrite, Some(&mut host));
+    assert_eq!(next, Some(PlaneState::GpuAuthoritative));
+
+    // When GPU is authoritative, dirty tracking is disabled (narrowed)
+    assert_eq!(host.narrow_tracked.borrow().get(&token), Some(&false));
+    // Since wp_fallback was registered as true, wp_fallback was enabled on host
+    assert_eq!(host.wp_fallback.borrow().get(&token), Some(&true));
+
+    // 2. CPU write evidence arrives -> transitions to CpuDirty
+    let next = shadow.on_event_with_host(sid, plane, PlaneEvent::CpuWriteEvidence { dirty_rect: false }, Some(&mut host));
+    assert_eq!(next, Some(PlaneState::CpuDirty));
+
+    // Now dirty tracking is re-enabled on host
+    assert_eq!(host.narrow_tracked.borrow().get(&token), Some(&true));
+
+    // 3. Destroy surface
+    shadow.on_event_with_host(sid, plane, PlaneEvent::GuestDestroy, Some(&mut host));
+    // 4. Drain GPU
+    shadow.on_event_with_host(sid, plane, PlaneEvent::GpuDrained, Some(&mut host));
+
+    // Token and plane cleaned up
+    assert_eq!(shadow.get_token(sid, plane), None);
+    assert_eq!(host.narrow_tracked.borrow().get(&token), Some(&false));
+
+    std::env::remove_var("REIMS_VGPU_LAB_DIRTY_NARROW");
+}
+
