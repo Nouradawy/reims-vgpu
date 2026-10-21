@@ -1377,6 +1377,11 @@ fn staged_span_pages<M: HostMemory>(
 /// answers — so this is the rail narrowing a neutral answer, not the neutral
 /// layer computing a rail's input.
 pub(crate) trait RailStage: Sized {
+    /// Some rails transfer a guest storage format through a different native
+    /// representation. Admission is separate from a byte-identical selector.
+    fn accepts_storage_format(format: u16) -> bool {
+        pixel_format::storage_selector(format).is_some()
+    }
     /// This rail's half of one staged binding, from the neutral facts of it.
     ///
     /// `texture_ref` is the guest object reference this binding was staged
@@ -1644,6 +1649,7 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
     let mut from_backing_direct = false;
     let mut ref_texture_record: Option<objects::RefTextureView> = None;
     let mut view_level = 0;
+    let mut view_slice = 0;
     let mut view_pixel_format = None;
     let mut heap_texture = None;
     let mut buffer_texture: Option<crate::runtime::decode::resource::BufferTextureDescriptor> =
@@ -1788,6 +1794,7 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
                 }
                 stage_ref = view.base_texture_ref;
                 view_level = view.level;
+                view_slice = view.slice;
                 view_pixel_format = view.pixel_format;
             }
         }
@@ -1824,7 +1831,7 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
             return Err(ComputeStatus::Unsupported("compute_heap_fmt_bytes"));
         };
         let storage_selector = pixel_format::storage_selector(format);
-        if is_storage && storage_selector.is_none() {
+        if is_storage && !R::accepts_storage_format(format) {
             crate::observe::fail(format!(
                 "compute_stage_tex heap_fail reason=fmt_storage ref={texture_ref} heap={heap_ref} fmt={format:#x} {width}x{height}"
             ));
@@ -1940,11 +1947,13 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
                                     args_hex.push('…');
                                 }
                             }
-                            crate::observe::verbose(|| format!(
+                            crate::observe::verbose(|| {
+                                format!(
                                 "compute_stage_tex ref_texture ref={texture_ref} sid={sid} ensure={} owner_task={owner_task} desc_len={} args_n={args_n} args_hex={args_hex}",
                                 ok as u8,
                                 desc.len(),
-                            ));
+                            )
+                            });
                         });
                     }
                 }
@@ -2017,7 +2026,8 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
                 // view over the same bytes. Per-bind measurement (view vs base
                 // geom), not a failure — verbose-gated to keep the always-on sink
                 // for genuine failures.
-                crate::observe::verbose(|| format!(
+                crate::observe::verbose(|| {
+                    format!(
                     "compute_stage_tex ref_texture_view mapping={mapping_id} view={}x{} fmt={:#x} base={}x{} fmt={:#x} multiplanar={}",
                     rec.width,
                     rec.height,
@@ -2026,7 +2036,8 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
                     m.height,
                     m.format,
                     multiplanar as u8
-                ));
+                )
+                });
                 (rec.width, rec.height, rec.pixel_format)
             } else if !mapping_stageable {
                 if !m.has_geom || m.width == 0 || m.height == 0 {
@@ -2131,7 +2142,7 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
             }
         };
         let storage_selector = pixel_format::storage_selector(stage_fmt);
-        if is_storage && storage_selector.is_none() {
+        if is_storage && !R::accepts_storage_format(stage_fmt) {
             crate::observe::fail(format!(
                 "compute_stage_tex mapper_ref_texture_fail reason=fmt_storage mapping={mapping_id} {width}x{height} fmt={format:#x}"
             ));
@@ -2204,9 +2215,11 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
             // Per-bind ref-texture sample-window measurement, not a failure — verbose-gated
             // (was a per-bind always-on line). Genuine window failures above emit
             // `mapper_ref_texture_fail reason=window` always-on.
-            crate::observe::verbose(|| format!(
+            crate::observe::verbose(|| {
+                format!(
                 "compute_stage_tex ref_texture_view_window mapping={mapping_id} view={width}x{height} fmt={stage_fmt:#x} bpp={bpp} tight={tight} surface_off={surface_offset} surface_bpr={surface_bpr} span_end={span_end}"
-            ));
+            )
+            });
         }
         let need_u64 = (tight as u64)
             .checked_mul(height as u64)
@@ -2378,9 +2391,11 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
             // Per-bind ref-texture stage SUCCESS census — not a failure; verbose-gated
             // (was always-on, ~300/boot). Genuine ref-texture stage failures above emit
             // `mapper_ref_texture_fail reason=<slug>` always-on.
-            crate::observe::verbose(|| format!(
+            crate::observe::verbose(|| {
+                format!(
                 "compute_stage_tex ref_texture_ok ref={texture_ref} sid={mapping_id} {width}x{height} fmt={stage_fmt:#x} pages={pages_n}"
-            ));
+            )
+            });
         }
         let mut staged = StagedTexture {
             binding,
@@ -2475,13 +2490,13 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
         );
     };
     let storage_selector = pixel_format::storage_selector(stage_format);
-    if is_storage && storage_selector.is_none() {
+    if is_storage && !R::accepts_storage_format(stage_format) {
         return linear_fail(
             ComputeStatus::Unsupported("linear_tex_fmt_storage"),
             format!("fmt={stage_format:#x}"),
         );
     }
-    let Some((gva, layout)) = tex.level_gva(view_level, state.page_shift) else {
+    let Some((mut gva, layout)) = tex.level_gva(view_level, state.page_shift) else {
         return linear_fail(
             ComputeStatus::MissingTexture("compute_linear_tex_no_level"),
             format!(
@@ -2501,6 +2516,17 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
             ComputeStatus::MissingTexture("compute_linear_tex_zero_geom"),
             format!("{w}x{h} stride={}", layout.row_stride),
         );
+    }
+    if view_slice > 0 {
+        let storage_rows = pixel_format::tight_row_count(h, tex.pixel_format)
+            .ok_or(ComputeStatus::Unsupported("linear_tex_fmt_rows"))?;
+        let slice_off = layout.row_stride
+            .checked_mul(u64::from(storage_rows))
+            .and_then(|stride| stride.checked_mul(u64::from(layout.planes())))
+            .and_then(|stride| stride.checked_mul(u64::from(view_slice)))
+            .ok_or(ComputeStatus::Unsupported("linear_tex_slice_overflow"))?;
+        gva = gva.checked_add(slice_off)
+            .ok_or(ComputeStatus::Unsupported("linear_tex_gva_overflow"))?;
     }
     let Some(tight) = (w as u64).checked_mul(bpp as u64).map(|v| v as usize) else {
         return linear_fail(
@@ -2531,7 +2557,7 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
         gva,
         row_stride: layout.row_stride,
     }];
-    if !is_storage && view_level == 0 {
+    if !is_storage && view_level == 0 && view_slice == 0 {
         level_sources.extend(linear_extra_levels(
             &tex,
             state.page_shift,
@@ -3194,6 +3220,18 @@ fn writeback_texture<R: RailStage, M: HostMemory + HostOps>(
                     "compute_wb_tex_mapper_ref_texture_write",
                 ));
             }
+            if (*format == pixel_format::MTL_FORMAT_BGRA8_UNORM
+                || *format == pixel_format::MTL_FORMAT_BGRA8_UNORM_SRGB)
+                && *surface_offset == 0
+            {
+                crate::runtime::surface_cache::store(
+                    state,
+                    *mapping_id,
+                    *width,
+                    *height,
+                    tex.bytes.clone(),
+                );
+            }
             Ok(())
         }
     }
@@ -3482,13 +3520,15 @@ fn resolve_dispatch_dims_reported<M: HostMemory + HostOps>(
                 |e| format!("[{},{},{}]", e.width, e.height, e.depth),
             )
         };
-        crate::observe::verbose(|| format!(
-            "compute_resolve_dims fail {e:?} kind={:?} grid={} tg={} ntex={}",
-            dispatch_kind(dispatch),
-            extent(grid),
-            extent(threadgroup),
-            acc.textures.len()
-        ));
+        crate::observe::verbose(|| {
+            format!(
+                "compute_resolve_dims fail {e:?} kind={:?} grid={} tg={} ntex={}",
+                dispatch_kind(dispatch),
+                extent(grid),
+                extent(threadgroup),
+                acc.textures.len()
+            )
+        });
     })
 }
 

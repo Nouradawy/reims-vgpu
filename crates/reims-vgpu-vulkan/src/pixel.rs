@@ -1207,6 +1207,8 @@ pub fn sampled_image(mtl: u16) -> Result<StorageImageFormat, Refusal> {
         pf::MTL_FORMAT_RGB10A2_UNORM => StorageImageFormat::Rgb10a2Unorm,
         pf::MTL_FORMAT_BGR10A2_UNORM => StorageImageFormat::Bgr10a2Unorm,
         pf::MTL_FORMAT_RG11B10_FLOAT => StorageImageFormat::Rg11b10Float,
+        pf::MTL_FORMAT_BGRA8_UNORM_SRGB => StorageImageFormat::Bgra8Unorm,
+        pf::MTL_FORMAT_RGBA8_UNORM_SRGB => StorageImageFormat::Rgba8Unorm,
         _ => return storage_image(mtl),
     };
     translate(mtl)?;
@@ -2157,12 +2159,13 @@ mod tests {
             verbatim_texel(p::MTL_FORMAT_RGBA32_FLOAT),
             Some((vk::Format::R32G32B32A32_SFLOAT, 16))
         );
-        // And the union did not quietly widen the render rail's own table to get
-        // there: the Store still refuses both, which is what keeps
-        // `a_byte_copy_destination_is_the_texel_every_other_table_agrees_it_is`
-        // an honest statement about render targets.
+        // RGBA32_UINT is compute-only and refuses store_texel_order. RGBA32_FLOAT
+        // was admitted to store_texel_order as Rgba32Float for ANGLE/Chromium render passes.
         assert!(p::store_texel_order(p::MTL_FORMAT_RGBA32_UINT).is_none());
-        assert!(p::store_texel_order(p::MTL_FORMAT_RGBA32_FLOAT).is_none());
+        assert_eq!(
+            p::store_texel_order(p::MTL_FORMAT_RGBA32_FLOAT),
+            Some(p::TexelLayout::Rgba32Float)
+        );
     }
 
     /// Each packed ten-bit colour word renders, byte-copies and samples at the
@@ -2289,8 +2292,6 @@ mod tests {
     #[test]
     fn a_texture_the_graphics_rail_samples_is_not_refused_by_the_compute_one() {
         const EXCEPTIONS: &[(u16, &str)] = &[
-            (p::MTL_FORMAT_RGBA8_UNORM_SRGB, "would downgrade unrecorded"),
-            (p::MTL_FORMAT_BGRA8_UNORM_SRGB, "would downgrade unrecorded"),
             (
                 p::MTL_FORMAT_BC1_RGBA,
                 "no block-compressed storage image exists",

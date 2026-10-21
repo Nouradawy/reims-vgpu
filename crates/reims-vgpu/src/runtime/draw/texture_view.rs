@@ -17,6 +17,7 @@ pub(crate) struct ViewResolve {
     /// `REIMS_VGPU_RESOURCE_RESOLVE_MAX_VIEW_CHAIN` walk).
     pub(crate) base_texture_ref: u32,
     pub(crate) level: u32,
+    pub(crate) slice: u32,
     /// Present when the view carries a swizzle form (opcode 0x1b); selectors already validated.
     pub(crate) swizzle: Option<pixel_format::SwizzlePlan>,
     /// Non-zero view pixel format from the descriptor (`@16`); `None` inherits the base format.
@@ -232,7 +233,7 @@ fn note_view_slice_range_dropped(
     opcode: u32,
     view: &crate::runtime::decode::resource::TextureViewDescriptor,
 ) {
-    if !view.carries_range() || (view.slice_base == 0 && view.slice_count <= 1) {
+    if !view.carries_range() || view.slice_count <= 1 {
         return;
     }
     let state = view.slice_base.rotate_left(32) ^ view.slice_count;
@@ -241,7 +242,7 @@ fn note_view_slice_range_dropped(
     }
     crate::observe::fail(format!(
         "texture_view slice_dropped ref={texture_ref} opcode={opcode:#x} \
-         base={} count={} note=render path samples slice 0",
+         base={} count={} note=render path only samples single slice",
         view.slice_base, view.slice_count
     ));
 }
@@ -257,7 +258,7 @@ fn decode_texture_view_hop_reasoned<M: HostMemory + HostOps>(
     host: &M,
     task_id: u32,
     texture_ref: u32,
-) -> Result<(u32, u32, Option<pixel_format::SwizzlePlan>, Option<u16>), TextureViewDecline> {
+) -> Result<(u32, u32, u32, Option<pixel_format::SwizzlePlan>, Option<u16>), TextureViewDecline> {
     use crate::runtime::decode::resource::{
         decode_texture_view_descriptor, texture_view_header, OBJECT_TYPE_TEXTURE_VIEW,
     };
@@ -318,6 +319,17 @@ fn decode_texture_view_hop_reasoned<M: HostMemory + HostOps>(
     } else {
         0
     };
+    let slice = if view.carries_range() {
+        if view.slice_base > u32::MAX as u64 {
+            return Err(TextureViewDecline::HopLevelOverflow {
+                texture_ref,
+                level_base: view.slice_base,
+            });
+        }
+        view.slice_base as u32
+    } else {
+        0
+    };
     let swizzle = if view.carries_swizzle() {
         // Malformed selectors (not in 0..5) fail the resolve — visible soft miss on sample.
         Some(pixel_format::swizzle_plan(&view.swizzle).ok_or(
@@ -331,7 +343,7 @@ fn decode_texture_view_hop_reasoned<M: HostMemory + HostOps>(
     };
     // Zero pixel_format means inherit base (serializer always writes a real format when set).
     let pixel_format = view.declared_pixel_format();
-    Ok((view.base_texture_ref, level, swizzle, pixel_format))
+    Ok((view.base_texture_ref, level, slice, swizzle, pixel_format))
 }
 
 /// Resolve texture-view to non-view base + mip + format override + swizzle.
@@ -350,7 +362,7 @@ pub(crate) fn resolve_texture_view_reasoned<M: HostMemory + HostOps>(
 ) -> Result<ViewResolve, TextureViewDecline> {
     use crate::runtime::decode::resource::OBJECT_TYPE_TEXTURE_VIEW;
 
-    let (mut base, level, swizzle, pixel_format) =
+    let (mut base, level, mut slice, swizzle, pixel_format) =
         decode_texture_view_hop_reasoned(state, host, task_id, texture_ref)?;
 
     // Collapse nested texture-view bases to a non-view texture (mapper-ref-texture /
@@ -366,11 +378,13 @@ pub(crate) fn resolve_texture_view_reasoned<M: HostMemory + HostOps>(
             break;
         }
         depth += 1;
-        let (next, _lvl, _sw, _fmt) = decode_texture_view_hop_reasoned(state, host, task_id, base)?;
+        let (next, _lvl, inner_slice, _sw, _fmt) =
+            decode_texture_view_hop_reasoned(state, host, task_id, base)?;
         if next == 0 || next == base {
             return Err(TextureViewDecline::ChainSelfOrZero { base, next, depth });
         }
         base = next;
+        slice = slice.saturating_add(inner_slice);
     }
 
     // Final base must not still be a texture-view past the chain cap.
@@ -383,6 +397,7 @@ pub(crate) fn resolve_texture_view_reasoned<M: HostMemory + HostOps>(
     Ok(ViewResolve {
         base_texture_ref: base,
         level,
+        slice,
         swizzle,
         pixel_format,
     })
@@ -695,6 +710,7 @@ pub(crate) fn load_linear_texture_host<M: HostMemory + HostOps>(
     task_id: u32,
     texture_ref: u32,
     level: u32,
+    slice: u32,
     format_override: Option<u16>,
     native: NativeUploads,
     site: crate::runtime::render_writeback::SettleSite,
@@ -705,7 +721,7 @@ pub(crate) fn load_linear_texture_host<M: HostMemory + HostOps>(
         task_id,
         texture_ref,
         level,
-        0,
+        slice,
         format_override,
         native,
         site,

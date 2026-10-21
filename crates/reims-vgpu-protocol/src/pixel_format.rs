@@ -2159,6 +2159,7 @@ pub fn render_target_numeric_type(format: u16) -> Option<ColorNumericType> {
 /// how they are stored, and only the storage matters to a copy.
 pub fn store_texel_order(format: u16) -> Option<TexelLayout> {
     Some(match format {
+        MTL_FORMAT_R8_UNORM => TexelLayout::R8,
         MTL_FORMAT_RGBA8_UNORM | MTL_FORMAT_RGBA8_UNORM_SRGB => TexelLayout::Rgba8,
         MTL_FORMAT_BGRA8_UNORM | MTL_FORMAT_BGRA8_UNORM_SRGB => TexelLayout::Bgra8,
         MTL_FORMAT_RGBA16_FLOAT => TexelLayout::Rgba16Float,
@@ -4976,6 +4977,7 @@ mod tests {
                     TexelLayout::Rg16Uint => SampledClass::Rg16Uint,
                     TexelLayout::Rgba32Float => SampledClass::Rgba32Float,
                     TexelLayout::R16Float => SampledClass::R16Float,
+                    TexelLayout::R8 => SampledClass::R8Unorm,
                     // Named rather than defaulted. This arm used to be
                     // `_ => SampledClass::Bgra8Unorm`, which was true only while
                     // the admitted set was {Rgba8, Bgra8, Rgba16Float}: the next
@@ -4992,15 +4994,11 @@ mod tests {
                 "{fmt:#x} is read as one layout by the sampler and copied as another"
             );
         }
-        // A renderable format that is still not a byte-copy destination, so a
-        // further widening of the set above has to change this line to pass.
-        // R16_FLOAT held this line until its LOAD seed was measured lost
-        // (`load_seed_lost fmt=0x19`, b486); R8_UNORM is the one left, served
-        // by the eight-bit rails it is exact on.
         assert!(render_target_bpp(MTL_FORMAT_R8_UNORM).is_some());
-        assert!(
-            store_texel_order(MTL_FORMAT_R8_UNORM).is_none(),
-            "R8_UNORM renders but is not admitted to a copy"
+        assert_eq!(
+            store_texel_order(MTL_FORMAT_R8_UNORM),
+            Some(TexelLayout::R8),
+            "R8_UNORM is admitted to the byte copy as a native 1-byte layout"
         );
         assert_eq!(
             store_texel_order(MTL_FORMAT_R16_FLOAT),

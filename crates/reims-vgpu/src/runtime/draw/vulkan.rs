@@ -16645,8 +16645,28 @@ fn depth_state_for(
     // attachment alone. Reading it from the absent depth attachment answered
     // CLEAR, so the second of two passes sharing a stencil buffer wiped what the
     // first wrote: WebGPU's `stencil8` multi-pass cover drew nothing (lab, b829).
+    //
+    // When both depth and stencil attachments are declared, prefer the load action
+    // of whichever attachment actually names a texture (e.g. stencil-only passes with
+    // a dummy depth descriptor where d.texture_ref == 0), or whichever preserves
+    // prior contents: wiping a combined depth-stencil buffer when either aspect
+    // asked LOAD loses what the prior pass wrote (iOS Simulator squircle masks).
     let (clear_value, load_action) = match (req.depth_attach.as_ref(), req.stencil_attach.as_ref()) {
-        (Some(d), _) => (d.clear_depth as f32, d.load_action),
+        (Some(d), Some(s)) if d.texture_ref == 0 && s.texture_ref != 0 => {
+            (d.clear_depth as f32, s.load_action)
+        }
+        (Some(d), Some(s)) => {
+            use reims_vgpu_protocol::pass_action::LoadAction;
+            let d_load = LoadAction::from_declared(d.load_action);
+            let s_load = LoadAction::from_declared(s.load_action);
+            let action = if s_load.preserves_prior_contents() && !d_load.preserves_prior_contents() {
+                s.load_action
+            } else {
+                d.load_action
+            };
+            (d.clear_depth as f32, action)
+        }
+        (Some(d), None) => (d.clear_depth as f32, d.load_action),
         (None, Some(s)) => (1.0, s.load_action),
         (None, None) => (1.0, MTL_LOAD_ACTION_CLEAR),
     };
@@ -16736,8 +16756,20 @@ pub(super) fn depth_chain_identity(
     req: &DrawEncodeRequest,
     with_stencil: bool,
 ) -> Option<crate::backend::vulkan::engine::TargetIdentity> {
-    let c0 = req.colors.first()?;
-    let (width, height) = (c0.width, c0.height);
+    let (width, height) = req
+        .colors
+        .first()
+        .map(|c0| (c0.width, c0.height))
+        .or_else(|| {
+            if req.depth_attach.is_some() || req.stencil_attach.is_some() {
+                req.viewports
+                    .first()
+                    .map(|vp| (vp[2].max(0.0) as u32, vp[3].max(0.0) as u32))
+                    .or_else(|| req.scissors.first().map(|sc| (sc.x + sc.width, sc.y + sc.height)))
+            } else {
+                None
+            }
+        })?;
     if width == 0 || height == 0 {
         return None;
     }
@@ -16762,10 +16794,14 @@ pub(super) fn depth_chain_identity(
         let generation = if *PER_TARGET
             .get_or_init(|| std::env::var("REIMS_VGPU_LAB_DEPTH_PER_TARGET").as_deref() == Ok("1"))
         {
-            (1u64 << 63)
-                | (u64::from(c0.mapping_id) << 40)
-                | (u64::from(c0.texture_ref) << 20)
-                ^ (c0.target_gva >> 12)
+            if let Some(c0) = req.colors.first() {
+                (1u64 << 63)
+                    | (u64::from(c0.mapping_id) << 40)
+                    | (u64::from(c0.texture_ref) << 20)
+                    ^ (c0.target_gva >> 12)
+            } else {
+                0
+            }
         } else {
             0
         };
@@ -21083,6 +21119,138 @@ mod vulkan_split_tests {
                 stencil: true,
             }),
             "the buffer is the stencil attachment's texture"
+        );
+    }
+
+    /// A stencil-only pass (such as an iOS Simulator squircle mask pass) has no
+    /// color attachments (`req.colors` is empty). Its geometry must be derived
+    /// from the active viewport or scissor rect so that `depth_chain_identity`
+    /// does not return `None` and fail to track resident stencil content.
+    #[test]
+    fn a_stencil_only_pass_without_colors_derives_identity_from_viewport_or_scissor() {
+        // 1. Geometry from viewport when colors is empty
+        let mut req_vp = DrawEncodeRequest::default();
+        req_vp.stencil_attach = Some(crate::runtime::render_pass::StencilAttachment {
+            texture_ref: 12,
+            load_action: MTL_LOAD_ACTION_LOAD,
+            ..Default::default()
+        });
+        req_vp.viewports = vec![[0.0, 0.0, 320.0, 480.0, 0.0, 1.0]];
+
+        let depth_vp = depth_state_for(&req_vp, None);
+        assert!(depth_vp.load, "the stencil attachment declared LOAD");
+        assert_eq!(
+            depth_vp.identity,
+            Some(crate::backend::vulkan::engine::TargetIdentity::Texture {
+                ref_: 12,
+                width: 320,
+                height: 480,
+                generation: 0,
+                stencil: true,
+            }),
+            "extent must be derived from viewport [2..3] when colors is empty"
+        );
+
+        // 2. Geometry from scissor rect when colors and viewports are empty
+        let mut req_sc = DrawEncodeRequest::default();
+        req_sc.stencil_attach = Some(crate::runtime::render_pass::StencilAttachment {
+            texture_ref: 14,
+            load_action: MTL_LOAD_ACTION_LOAD,
+            ..Default::default()
+        });
+        req_sc.scissors = vec![crate::runtime::render_pass::ScissorRect {
+            x: 10,
+            y: 20,
+            width: 100,
+            height: 200,
+        }];
+
+        let depth_sc = depth_state_for(&req_sc, None);
+        assert!(depth_sc.load, "the stencil attachment declared LOAD");
+        assert_eq!(
+            depth_sc.identity,
+            Some(crate::backend::vulkan::engine::TargetIdentity::Texture {
+                ref_: 14,
+                width: 110,
+                height: 220,
+                generation: 0,
+                stencil: true,
+            }),
+            "extent must be derived from scissor (x+width, y+height) when viewports is empty"
+        );
+    }
+
+    /// When a pass declares both depth and stencil attachments, but the depth
+    /// attachment is a dummy (texture_ref == 0) while the stencil attachment is
+    /// real (texture_ref != 0), the pass must respect the stencil attachment's
+    /// load action and target texture reference.
+    #[test]
+    fn a_combined_pass_with_dummy_depth_ref_respects_stencil_load_and_identity() {
+        let mut req = DrawEncodeRequest::default();
+        req.colors.push(ColorRtRequest {
+            width: 16,
+            height: 16,
+            ..Default::default()
+        });
+        req.depth_attach = Some(crate::runtime::render_pass::DepthAttachment {
+            texture_ref: 0,
+            load_action: MTL_LOAD_ACTION_CLEAR,
+            clear_depth: 0.5,
+            ..Default::default()
+        });
+        req.stencil_attach = Some(crate::runtime::render_pass::StencilAttachment {
+            texture_ref: 22,
+            load_action: MTL_LOAD_ACTION_LOAD,
+            clear_stencil: 1,
+            ..Default::default()
+        });
+
+        let depth = depth_state_for(&req, None);
+        assert!(
+            depth.load,
+            "stencil load action must be respected when depth texture_ref == 0"
+        );
+        assert_eq!(
+            depth.identity,
+            Some(crate::backend::vulkan::engine::TargetIdentity::Texture {
+                ref_: 22,
+                width: 16,
+                height: 16,
+                generation: 0,
+                stencil: true,
+            }),
+            "target identity must be the non-zero stencil texture_ref"
+        );
+    }
+
+    /// In a combined depth-stencil attachment where both aspects are declared,
+    /// an action that preserves prior contents (e.g. stencil LOAD) must take
+    /// precedence over CLEAR so that prior stencil data is not wiped.
+    #[test]
+    fn a_combined_pass_preserves_stencil_when_depth_clears_but_stencil_loads() {
+        let mut req = DrawEncodeRequest::default();
+        req.colors.push(ColorRtRequest {
+            width: 32,
+            height: 32,
+            ..Default::default()
+        });
+        req.depth_attach = Some(crate::runtime::render_pass::DepthAttachment {
+            texture_ref: 33,
+            load_action: MTL_LOAD_ACTION_CLEAR,
+            clear_depth: 1.0,
+            ..Default::default()
+        });
+        req.stencil_attach = Some(crate::runtime::render_pass::StencilAttachment {
+            texture_ref: 33,
+            load_action: MTL_LOAD_ACTION_LOAD,
+            clear_stencil: 0,
+            ..Default::default()
+        });
+
+        let depth = depth_state_for(&req, None);
+        assert!(
+            depth.load,
+            "load action preserving prior contents must win over Clear to preserve stencil content"
         );
     }
 
