@@ -2131,11 +2131,19 @@ fn attachment_alias_resident_chain_selection() {
         load_action: MTL_LOAD_ACTION_LOAD,
         ..Default::default()
     });
-    assert_eq!(
-        fragment_attachment_alias_sample(&req, 42, None),
-        None,
-        "unarmed LOAD without seed must not alias"
-    );
+    if !crate::runtime::draw::vulkan::load_seed_rescue_enabled() {
+        assert_eq!(
+            fragment_attachment_alias_sample(&req, 42, None),
+            None,
+            "unarmed LOAD without seed must not alias"
+        );
+    } else {
+        assert_eq!(
+            fragment_attachment_alias_sample(&req, 42, None),
+            Some((8, 8, AttachmentAliasSample::ResidentChain { slot: 0 })),
+            "load_seed_rescue chains unarmed LOAD from resident target"
+        );
+    }
     req.chain_from_resident = true;
     assert_eq!(
         fragment_attachment_alias_sample(&req, 42, None),

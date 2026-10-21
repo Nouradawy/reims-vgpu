@@ -546,7 +546,11 @@ pub fn write_task_gva<M: HostMemory>(
 fn via_caller() -> String {
     let loc = std::panic::Location::caller();
     let file = loc.file();
-    let tail = file.rfind("/src/").map_or(file, |i| &file[i + 5..]);
+    let normalized = file.replace('\\', "/");
+    let tail = match normalized.rfind("/src/") {
+        Some(i) => normalized[i + 5..].to_string(),
+        None => normalized,
+    };
     format!("{tail}:{}", loc.line())
 }
 

@@ -4751,6 +4751,17 @@ pub(crate) unsafe fn execute_draw_inner(
             pools.acquire_multisample_target(ctx, multisample_key, render_pass, counters)?
         };
         target_fb = framebuffer;
+        if crate::observe::first_sight("exec_multisample_resolve", req.multisample_source) {
+            crate::observe::off(format!(
+                "exec_multisample_resolve {}x{} samples={} src_ident={:?} dst_ident={:?} fb={:?}",
+                req.width,
+                req.height,
+                raster_sample_count,
+                req.multisample_source_identity,
+                req.target_identity,
+                framebuffer
+            ));
+        }
         Some(image)
     } else {
         None

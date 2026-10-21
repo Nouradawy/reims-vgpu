@@ -175,7 +175,7 @@ mod tests {
             m.has_geom = true;
             m.width = 64;
             m.height = 32;
-            m.format = crate::protocol::pixel_format::MTL_FORMAT_RGBA32_FLOAT;
+            m.format = crate::protocol::pixel_format::MTL_FORMAT_RGBA32_UINT;
         }
         assert_eq!(
             surface_identity(&state, 7, 64, 32).resident_format(),

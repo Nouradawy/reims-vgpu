@@ -2266,7 +2266,7 @@ impl ObjectCaches {
                     .store_op(vk::AttachmentStoreOp::STORE)
                     .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
                     .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-                    .initial_layout(color0_layout)
+                    .initial_layout(vk::ImageLayout::UNDEFINED)
                     .final_layout(color0_final),
             );
             resolve_ref.push(
