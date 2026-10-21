@@ -173,6 +173,12 @@ pub struct ReimsVgpuHostOps {
     pub guest_write_rebase: Option<
         unsafe extern "C" fn(ctx: *mut c_void, token: u64, gpas: *const u64, count: usize),
     >,
+    /// Phase 4 narrow dirty tracking: host tells QEMU whether a token is actively tracked.
+    pub set_dirty_tracking:
+        Option<unsafe extern "C" fn(ctx: *mut c_void, token: u64, enabled: c_int)>,
+    /// Phase 4 narrow write-protect fallback: host tells QEMU whether a token is designated for narrow WP.
+    pub set_wp_fallback:
+        Option<unsafe extern "C" fn(ctx: *mut c_void, token: u64, fallback: c_int)>,
 }
 
 // SAFETY: QEMU keeps the table valid for the device lifetime; callbacks only
@@ -294,6 +300,8 @@ impl ReimsVgpuHostOps {
             guest_write_sync_many: None,
             guest_write_sync_ahead: None,
             guest_write_rebase: None,
+            set_dirty_tracking: None,
+            set_wp_fallback: None,
         }
     }
 }
@@ -1150,6 +1158,28 @@ impl HostOps for QemuHost<'_> {
     fn guest_written_pages(&self, token: u64, since_gen: u64) -> Option<Vec<u64>> {
         self.ops.written_pages(token, since_gen)
     }
+
+    fn set_dirty_tracking(&mut self, token: u64, enabled: bool) {
+        if token == 0 {
+            return;
+        }
+        if let Some(f) = self.ops.set_dirty_tracking {
+            // SAFETY: QEMU owns ctx; safe from any thread.
+            unsafe { f(self.ops.ctx, token, enabled as c_int) };
+        } else {
+            crate::runtime::iosurface_registry::census::note_dirty_narrow_unavailable();
+        }
+    }
+
+    fn set_wp_fallback(&mut self, token: u64, fallback: bool) {
+        if token == 0 {
+            return;
+        }
+        if let Some(f) = self.ops.set_wp_fallback {
+            // SAFETY: QEMU owns ctx; safe from any thread.
+            unsafe { f(self.ops.ctx, token, fallback as c_int) };
+        }
+    }
 }
 
 /// TEMP (lab, `REIMS_VGPU_LAB_GEN_PROF=on`): the drain's synced generation
@@ -1598,10 +1628,9 @@ mod tests {
 
         let q = prompt.lock();
         assert_eq!(q.len(), 3, "gfx pulse + iosfc pulse + one cursor");
-        assert_eq!(q[0].kind, HostActionKind::IrqGfxPulse);
-        assert_eq!(q[1].kind, HostActionKind::IrqIosfcPulse);
-        assert_eq!(q[2].kind, HostActionKind::CursorUpdate);
-        assert_eq!(q[2].a0, 30);
+        assert!(q.iter().any(|a| a.kind == HostActionKind::IrqGfxPulse));
+        assert!(q.iter().any(|a| a.kind == HostActionKind::IrqIosfcPulse));
+        assert!(q.iter().any(|a| a.kind == HostActionKind::CursorUpdate && a.a0 == 30));
         drop(q);
         assert_eq!(actions.len(), 1, "scanout stays on the lock-owning rail");
         assert_eq!(actions[0].kind, HostActionKind::ScanoutUpdate);

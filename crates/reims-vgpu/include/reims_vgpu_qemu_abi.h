@@ -21,7 +21,10 @@
 extern "C" {
 #endif
 
-/* v28: ReimsVgpuHostOps.guest_write_rebase - the device itself just stored into these pages of a
+/* v29: ReimsVgpuHostOps.set_dirty_tracking / set_wp_fallback — Phase 4 narrow
+ *      dirty-tracking: host tells QEMU whether a token is actively tracked, or
+ *      designated for narrow write-protect fallback.
+ * v28: ReimsVgpuHostOps.guest_write_rebase - the device itself just stored into these pages of a
  *      tracked set (a writeback landing a GPU frame): a set the tracker answers for by hashing page
  *      content takes their content as its baseline, so the device's own stores do not read back as
  *      the guest writing the surface. NULL: no rebase (a hashed set reports them, as before).
@@ -132,7 +135,7 @@ extern "C" {
  *     thread so IRQ pulses reach the guest mid-drain — ack fast).
  * v6: ReimsVgpuHostOps.is_ram_gpa (reject non-RAM PFNs on mapper / map_pages paths).
  * v5: ReimsVgpuQemuCreateInfo.guest_page_shift (12 = x86 Tahoe, 14 = arm64e). */
-#define REIMS_VGPU_QEMU_ABI_VERSION 28u
+#define REIMS_VGPU_QEMU_ABI_VERSION 29u
 
 #define REIMS_VGPU_MAP_PAGES_FAILURE_NONE 0u
 #define REIMS_VGPU_MAP_PAGES_FAILURE_RESERVATION 1u
@@ -489,6 +492,18 @@ typedef struct ReimsVgpuHostOps {
      * a sync of the set already running. Safe from any thread. NULL: no rebase.
      */
     void (*guest_write_rebase)(void *ctx, uint64_t token, const uint64_t *gpas, size_t count);
+    /*
+     * Phase 4: narrow dirty tracking.
+     * Host informs QEMU whether `token` should be actively tracked by dirty queries.
+     * Safe from any thread. NULL: all registered tokens tracked unconditionally.
+     */
+    void (*set_dirty_tracking)(void *ctx, uint64_t token, int enabled);
+    /*
+     * Phase 4: narrow write-protect fallback.
+     * Host informs QEMU whether `token` is designated for narrow write-protect fallback.
+     * Safe from any thread. NULL: no narrow WP fallback.
+     */
+    void (*set_wp_fallback)(void *ctx, uint64_t token, int fallback);
 } ReimsVgpuHostOps;
 
 /*

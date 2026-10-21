@@ -769,6 +769,14 @@ pub trait HostOps {
     fn guest_written_pages(&self, _token: u64, _since_gen: u64) -> Option<Vec<u64>> {
         None
     }
+
+    /// Phase 4: narrow dirty tracking.
+    /// Host informs QEMU whether `token` should be actively tracked by dirty queries.
+    fn set_dirty_tracking(&mut self, _token: u64, _enabled: bool) {}
+
+    /// Phase 4: narrow write-protect fallback.
+    /// Host informs QEMU whether `token` is designated for narrow write-protect fallback.
+    fn set_wp_fallback(&mut self, _token: u64, _fallback: bool) {}
 }
 
 /// Arm64e guest page size, from the contract shift rather than a literal.
@@ -905,6 +913,10 @@ pub struct FakeHost {
     /// pages the device handed over. The fixture's witness is the bitmap kind,
     /// which the device's stores never reach, so it only records them.
     pub rebased: std::cell::RefCell<Vec<(u64, Vec<u64>)>>,
+    /// Recorded set_dirty_tracking calls in test fixtures.
+    pub narrow_tracked: std::cell::RefCell<std::collections::HashMap<u64, bool>>,
+    /// Recorded set_wp_fallback calls in test fixtures.
+    pub wp_fallback: std::cell::RefCell<std::collections::HashMap<u64, bool>>,
 }
 
 #[cfg(test)]
@@ -1597,6 +1609,14 @@ impl HostOps for FakeHost {
                 .map(|(p, _)| *p)
                 .collect(),
         )
+    }
+
+    fn set_dirty_tracking(&mut self, token: u64, enabled: bool) {
+        self.narrow_tracked.borrow_mut().insert(token, enabled);
+    }
+
+    fn set_wp_fallback(&mut self, token: u64, fallback: bool) {
+        self.wp_fallback.borrow_mut().insert(token, fallback);
     }
 
     /// Contiguous host view; `page_size` is the guest page size from the device.

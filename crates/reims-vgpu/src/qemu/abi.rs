@@ -106,7 +106,8 @@ use std::slice;
 /// shim falls back to QEMU's own display.
 /// v20 gives `map_pages` a structured per-call failure output.
 /// v28 adds `guest_write_rebase` (the device's own stores into a hashed set).
-pub const REIMS_VGPU_QEMU_ABI_VERSION: u32 = 28;
+/// v29 adds `set_dirty_tracking` and `set_wp_fallback` (Phase 4 narrow dirty tracking).
+pub const REIMS_VGPU_QEMU_ABI_VERSION: u32 = 29;
 
 #[repr(C)]
 pub struct ReimsVgpuQemuCreateInfo {
@@ -148,10 +149,27 @@ fn copy_host_ops(ops: *const ReimsVgpuHostOps) -> Option<ReimsVgpuHostOps> {
     }
     // SAFETY: QEMU passes a live ReimsVgpuHostOps for the device lifetime.
     let ops = unsafe { &*ops };
-    if ops.abi_version != REIMS_VGPU_QEMU_ABI_VERSION {
+    if ops.abi_version != REIMS_VGPU_QEMU_ABI_VERSION && ops.abi_version != 28 {
         return None;
     }
     if (ops.struct_size as usize) < std::mem::size_of::<ReimsVgpuHostOps>() {
+        if ops.abi_version == 28 {
+            // Older QEMU binary (ABI v28): copy up to ops.struct_size, remainder is None.
+            let mut full = ReimsVgpuHostOps {
+                set_dirty_tracking: None,
+                set_wp_fallback: None,
+                ..unsafe { std::mem::zeroed() }
+            };
+            let copy_bytes = (ops.struct_size as usize).min(std::mem::size_of::<ReimsVgpuHostOps>());
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    ops as *const _ as *const u8,
+                    &mut full as *mut _ as *mut u8,
+                    copy_bytes,
+                );
+            }
+            return Some(full);
+        }
         return None;
     }
     Some(*ops)
@@ -174,7 +192,7 @@ pub unsafe extern "C" fn reims_vgpu_qemu_device_create(
             if !info.is_null() {
                 // SAFETY: caller-provided create info.
                 let info = unsafe { &*info };
-                if info.abi_version != REIMS_VGPU_QEMU_ABI_VERSION {
+                if info.abi_version != REIMS_VGPU_QEMU_ABI_VERSION && info.abi_version != 28 {
                     return REIMS_VGPU_QEMU_ERR_ARGS;
                 }
                 if (info.struct_size as usize) < std::mem::size_of::<ReimsVgpuQemuCreateInfo>() {
@@ -1071,7 +1089,7 @@ mod tests {
             .filter(|f| !f.is_empty())
             .collect();
         assert_eq!(
-            &fields[fields.len() - 6..],
+            &fields[fields.len() - 8..],
             [
                 "void (*thread_attach)(void *ctx)",
                 "void (*thread_detach)(void *ctx)",
@@ -1079,6 +1097,8 @@ mod tests {
                 "void (*guest_write_sync_many)(void *ctx, const uint64_t *tokens, size_t count)",
                 "void (*guest_write_sync_ahead)(void *ctx, const uint64_t *tokens, size_t count)",
                 "void (*guest_write_rebase)(void *ctx, uint64_t token, const uint64_t *gpas, size_t count)",
+                "void (*set_dirty_tracking)(void *ctx, uint64_t token, int enabled)",
+                "void (*set_wp_fallback)(void *ctx, uint64_t token, int fallback)",
             ],
             "the header's HostOps tail must match the Rust struct's"
         );
@@ -1109,9 +1129,17 @@ mod tests {
             std::mem::offset_of!(ReimsVgpuHostOps, guest_write_sync_ahead) + word
         );
         assert_eq!(
+            std::mem::offset_of!(ReimsVgpuHostOps, set_dirty_tracking),
+            std::mem::offset_of!(ReimsVgpuHostOps, guest_write_rebase) + word
+        );
+        assert_eq!(
+            std::mem::offset_of!(ReimsVgpuHostOps, set_wp_fallback),
+            std::mem::offset_of!(ReimsVgpuHostOps, set_dirty_tracking) + word
+        );
+        assert_eq!(
             std::mem::size_of::<ReimsVgpuHostOps>(),
-            std::mem::offset_of!(ReimsVgpuHostOps, guest_write_rebase) + word,
-            "nothing may follow the rebase (v28) on either side"
+            std::mem::offset_of!(ReimsVgpuHostOps, set_wp_fallback) + word,
+            "nothing may follow set_wp_fallback (v29) on either side"
         );
     }
 
