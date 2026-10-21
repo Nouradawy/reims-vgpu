@@ -356,8 +356,8 @@ pub const ROOT_OP_DEVICE_INFO_TAHOE: u16 = 0x3a;
 /// The general rule the three share: a `Cmd*` name is not evidence of a FIFO
 /// opcode. This space is exactly the slots below, and it is full.
 ///
-/// The reference host bounds the header's 16-bit opcode with `opcode <= 0x40`
-/// before indexing its dispatch table, so `0x41` and above are not commands that
+/// The reference host bounds the header's 16-bit opcode with `opcode <= 0x47`
+/// before indexing its dispatch table, so `0x48` and above are not commands that
 /// went unimplemented — they are values no handler exists for at all, and a
 /// packet carrying one is malformed rather than merely unsupported. In range,
 /// the slots split three ways: a command (the constants below), the shared
@@ -510,6 +510,20 @@ pub const CHILD_OP_DISCARD_RESOURCES: u16 = 0x3f;
 /// the guest blocks on the reply, so a refusal is a stall and not a dropped
 /// command.
 pub const CHILD_OP_HEAP_TEXTURE_SIZE_AND_ALIGN: u16 = 0x40;
+/// `CmdIosurfCreate`: Guest registers an IOSurface with host-side geometry & initial seed.
+pub const CHILD_OP_IOSURF_CREATE: u16 = 0x41;
+/// `CmdIosurfDestroy`: Guest notifies host of IOSurface destruction.
+pub const CHILD_OP_IOSURF_DESTROY: u16 = 0x42;
+/// `CmdIosurfUsecount`: Guest notifies host of external reference usecount change.
+pub const CHILD_OP_IOSURF_USECOUNT: u16 = 0x43;
+/// `CmdIosurfLock`: Guest locks surface for CPU reading/writing.
+pub const CHILD_OP_IOSURF_LOCK: u16 = 0x44;
+/// `CmdIosurfUnlock`: Guest unlocks surface after CPU write, notifying seed/dirty rect.
+pub const CHILD_OP_IOSURF_UNLOCK: u16 = 0x45;
+/// `CmdIosurfReadbackReq`: Guest requests explicit GPU-to-CPU plane readback into guest physical backing.
+pub const CHILD_OP_IOSURF_READBACK_REQ: u16 = 0x46;
+/// `CmdIosurfReadbackDone`: Host acknowledges completion of plane readback.
+pub const CHILD_OP_IOSURF_READBACK_DONE: u16 = 0x47;
 
 // The three present commands' trailer offsets and widths live in
 // `reims_vgpu_protocol::present`, which is the layer allowed to say what a wire
@@ -1369,6 +1383,16 @@ pub fn device_info_caps(limits: &DeviceInfoLimits, version: u32) -> Vec<(u32, u3
                 DEVICE_INFO_KEY_DUAL_PLANE_TEXTURES => {
                     return (key, u32::from(protocol_dual_plane_textures(version)));
                 }
+                DEVICE_INFO_KEY_SUPPORT_FLAGS_2025 => {
+                    let mut flags = value;
+                    if matches!(
+                        reims_vgpu_config::read(reims_vgpu_config::LAB_IOSURFACE_EVENTS).0,
+                        reims_vgpu_config::Switch::On
+                    ) {
+                        flags |= CAP_IOSURFACE_EVENTS;
+                    }
+                    return (key, flags);
+                }
                 _ => return (key, value),
             };
             (key, value.min(host))
@@ -1592,6 +1616,8 @@ pub const DEVICE_INFO_KEY_TEXTURE_WRITE_ROUNDING: u32 = 41;
 /// Bit 0 `IndirectCommandBuffers`, bit 1 `ArgumentBuffers2025`, bit 2
 /// `EnhancedRenderICBs`. Reaches macOS 26 and no older rail.
 pub const DEVICE_INFO_KEY_SUPPORT_FLAGS_2025: u32 = 42;
+/// Bit 3 of `SUPPORT_FLAGS_2025`: capability for IOSurface events & synchronization protocol.
+pub const CAP_IOSURFACE_EVENTS: u32 = reims_vgpu_protocol::iosurface_events::CAP_IOSURFACE_EVENTS;
 /// Bits 0..7 are `supportsFamily` for Apple 5, 6, 7, 8, 9, 9b, 10, 11 — a *set*,
 /// where [`DEVICE_INFO_KEY_GPU_FAMILY_CLAMPED`] is a single member of it.
 /// Reaches macOS 26 and no older rail.

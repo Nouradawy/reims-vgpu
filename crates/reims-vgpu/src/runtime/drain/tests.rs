@@ -8205,3 +8205,209 @@ fn the_slots_a_pass_has_seen_are_remembered_past_the_inline_room() {
     assert!(!seen.insert(40));
     assert!(seen.insert(u32::MAX));
 }
+
+#[test]
+fn test_iosurface_packets_dispatch_in_drain() {
+    let mut state = DeviceState::new(DeviceId(1), PAGE_SHIFT_ARM64E);
+    let mut host = FakeHost::new();
+
+    let _old_shadow = std::env::var_os("REIMS_VGPU_LAB_IOSURFACE_REGISTRY_SHADOW");
+    unsafe { std::env::set_var("REIMS_VGPU_LAB_IOSURFACE_REGISTRY_SHADOW", "1") };
+
+    let sid = 55;
+
+    // 1. CHILD_OP_IOSURF_CREATE
+    let create_msg = reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfCreate {
+        surface_id: sid,
+        pixel_format: 0x42475241, // 'BGRA'
+        total_alloc_size: 4096,
+        plane_count: 1,
+        seed: 1,
+        planes: [reims_vgpu_protocol::iosurface_events::ReimsIosurfPlaneDesc {
+            width: 64,
+            height: 16,
+            bytes_per_row: 256,
+            bytes_per_element: 4,
+            plane_offset: 0,
+            plane_size: 4096,
+        }, Default::default(), Default::default(), Default::default()],
+    };
+    let mut create_payload = vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfCreate::TOTAL_LEN];
+    assert!(create_msg.encode(&mut create_payload));
+
+    let packet_create = Packet {
+        opcode: CHILD_OP_IOSURF_CREATE,
+        stamp_waits: Vec::new(),
+        total_size: PACKET_HEADER_LEN + create_payload.len() as u32,
+        completion_stamp: 0,
+        payload: create_payload,
+        next_head: 0,
+        lone: false,
+    };
+    let disp = process_child_packet(&mut state, &mut host, 1, &packet_create);
+    assert_eq!(disp, ChildPacketDisposition::Complete);
+    assert_eq!(
+        crate::runtime::iosurface_registry::shadow::with_shadow(|reg| reg.query_state(sid, 0)),
+        Some(crate::runtime::iosurface_registry::PlaneState::Created)
+    );
+
+    // Transition to GpuAuthoritative via simulated GPU write
+    crate::runtime::iosurface_registry::shadow::note_shadow_event(
+        sid,
+        0,
+        crate::runtime::iosurface_registry::PlaneEvent::GpuWrite,
+    );
+    assert_eq!(
+        crate::runtime::iosurface_registry::shadow::with_shadow(|reg| reg.query_state(sid, 0)),
+        Some(crate::runtime::iosurface_registry::PlaneState::GpuAuthoritative)
+    );
+
+    // 2. CHILD_OP_IOSURF_LOCK
+    let lock_msg = reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfLock {
+        surface_id: sid,
+        options: 0,
+        seed: 1,
+        reserved: 0,
+    };
+    let mut lock_payload = vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfLock::LEN];
+    assert!(lock_msg.encode(&mut lock_payload));
+    let packet_lock = Packet {
+        opcode: CHILD_OP_IOSURF_LOCK,
+        stamp_waits: Vec::new(),
+        total_size: PACKET_HEADER_LEN + lock_payload.len() as u32,
+        completion_stamp: 0,
+        payload: lock_payload,
+        next_head: 0,
+        lone: false,
+    };
+    let disp = process_child_packet(&mut state, &mut host, 1, &packet_lock);
+    assert_eq!(disp, ChildPacketDisposition::Complete);
+
+    // 3. CHILD_OP_IOSURF_UNLOCK
+    let unlock_msg = reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfUnlock {
+        surface_id: sid,
+        options: 0,
+        seed: 2,
+        dirty_rect_valid: 1,
+        dirty_x: 0,
+        dirty_y: 0,
+        dirty_width: 10,
+        dirty_height: 10,
+    };
+    let mut unlock_payload = vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfUnlock::LEN];
+    assert!(unlock_msg.encode(&mut unlock_payload));
+    let packet_unlock = Packet {
+        opcode: CHILD_OP_IOSURF_UNLOCK,
+        stamp_waits: Vec::new(),
+        total_size: PACKET_HEADER_LEN + unlock_payload.len() as u32,
+        completion_stamp: 0,
+        payload: unlock_payload,
+        next_head: 0,
+        lone: false,
+    };
+    let disp = process_child_packet(&mut state, &mut host, 1, &packet_unlock);
+    assert_eq!(disp, ChildPacketDisposition::Complete);
+    assert_eq!(
+        crate::runtime::iosurface_registry::shadow::with_shadow(|reg| reg.query_state(sid, 0)),
+        Some(crate::runtime::iosurface_registry::PlaneState::CpuDirty)
+    );
+
+    // 4. CHILD_OP_IOSURF_READBACK_REQ
+    let readback_msg = reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfReadbackReq {
+        surface_id: sid,
+        plane: 0,
+        sequence: 777,
+    };
+    let mut readback_payload = vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfReadbackReq::LEN];
+    assert!(readback_msg.encode(&mut readback_payload));
+    let packet_readback = Packet {
+        opcode: CHILD_OP_IOSURF_READBACK_REQ,
+        stamp_waits: Vec::new(),
+        total_size: PACKET_HEADER_LEN + readback_payload.len() as u32,
+        completion_stamp: 0,
+        payload: readback_payload,
+        next_head: 0,
+        lone: false,
+    };
+    let disp = process_child_packet(&mut state, &mut host, 1, &packet_readback);
+    assert_eq!(disp, ChildPacketDisposition::Complete);
+
+    // 5. CHILD_OP_IOSURF_READBACK_DONE
+    let done_msg = reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfReadbackDone {
+        surface_id: sid,
+        plane: 0,
+        sequence: 777,
+        status: 0,
+        reserved: 0,
+    };
+    let mut done_payload = vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfReadbackDone::LEN];
+    assert!(done_msg.encode(&mut done_payload));
+    let packet_done = Packet {
+        opcode: CHILD_OP_IOSURF_READBACK_DONE,
+        stamp_waits: Vec::new(),
+        total_size: PACKET_HEADER_LEN + done_payload.len() as u32,
+        completion_stamp: 0,
+        payload: done_payload,
+        next_head: 0,
+        lone: false,
+    };
+    let disp = process_child_packet(&mut state, &mut host, 1, &packet_done);
+    assert_eq!(disp, ChildPacketDisposition::Complete);
+
+    // 6. CHILD_OP_IOSURF_USECOUNT
+    let usecount_msg = reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfUsecount {
+        surface_id: sid,
+        usecount: 2,
+        delta: 1,
+        reserved: 0,
+    };
+    let mut usecount_payload = vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfUsecount::LEN];
+    assert!(usecount_msg.encode(&mut usecount_payload));
+    let packet_usecount = Packet {
+        opcode: CHILD_OP_IOSURF_USECOUNT,
+        stamp_waits: Vec::new(),
+        total_size: PACKET_HEADER_LEN + usecount_payload.len() as u32,
+        completion_stamp: 0,
+        payload: usecount_payload,
+        next_head: 0,
+        lone: false,
+    };
+    let disp = process_child_packet(&mut state, &mut host, 1, &packet_usecount);
+    assert_eq!(disp, ChildPacketDisposition::Complete);
+
+    // Transition back to GpuAuthoritative before destroy so free is deferred
+    crate::runtime::iosurface_registry::shadow::note_shadow_event(
+        sid,
+        0,
+        crate::runtime::iosurface_registry::PlaneEvent::GpuWrite,
+    );
+
+    // 7. CHILD_OP_IOSURF_DESTROY
+    let destroy_msg = reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfDestroy {
+        surface_id: sid,
+        reserved: 0,
+    };
+    let mut destroy_payload = vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfDestroy::LEN];
+    assert!(destroy_msg.encode(&mut destroy_payload));
+    let packet_destroy = Packet {
+        opcode: CHILD_OP_IOSURF_DESTROY,
+        stamp_waits: Vec::new(),
+        total_size: PACKET_HEADER_LEN + destroy_payload.len() as u32,
+        completion_stamp: 0,
+        payload: destroy_payload,
+        next_head: 0,
+        lone: false,
+    };
+    let disp = process_child_packet(&mut state, &mut host, 1, &packet_destroy);
+    assert_eq!(disp, ChildPacketDisposition::Complete);
+    assert_eq!(
+        crate::runtime::iosurface_registry::shadow::with_shadow(|reg| reg.query_state(sid, 0)),
+        Some(crate::runtime::iosurface_registry::PlaneState::Released)
+    );
+
+    match _old_shadow {
+        Some(val) => unsafe { std::env::set_var("REIMS_VGPU_LAB_IOSURFACE_REGISTRY_SHADOW", val) },
+        None => unsafe { std::env::remove_var("REIMS_VGPU_LAB_IOSURFACE_REGISTRY_SHADOW") },
+    }
+}
+

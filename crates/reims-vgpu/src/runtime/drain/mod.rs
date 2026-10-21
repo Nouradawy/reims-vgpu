@@ -8777,6 +8777,8 @@ fn process_child_packet<H: HostMemory + HostOps>(
             crate::backend::vulkan::engine::quiesce_guest_reads();
         }
     }
+    let iosurf_events_active = crate::config::read(crate::config::LAB_IOSURFACE_EVENTS).0 == crate::config::Switch::On
+        || crate::config::read(crate::config::LAB_IOSURFACE_REGISTRY_SHADOW).0 == crate::config::Switch::On;
     match packet.opcode {
         CHILD_OP_DEFINE_TASK2 => {
             apply_define_task2(state, host, &packet.payload, Some(channel_id));
@@ -9291,6 +9293,186 @@ fn process_child_packet<H: HostMemory + HostOps>(
                     },
                 )
                 .fail();
+            }
+        }
+        // IOSurface lifecycle and synchronization protocol messages (0x41..0x47).
+        // Governed by CAP_IOSURFACE_EVENTS / REIMS_VGPU_LAB_IOSURFACE_EVENTS.
+        CHILD_OP_IOSURF_CREATE if iosurf_events_active => {
+            crate::runtime::drain::note_store_route("child_iosurf_create");
+            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfCreate::decode(&packet.payload) {
+                Some(msg) => {
+                    let planes = (msg.plane_count as usize)
+                        .min(reims_vgpu_protocol::iosurface_events::MAX_IOSURF_PLANES)
+                        .max(1);
+                    for plane in 0..planes {
+                        crate::runtime::iosurface_registry::shadow::note_shadow_create(
+                            msg.surface_id,
+                            plane as u32,
+                        );
+                    }
+                }
+                None => {
+                    crate::observe::fail(format!(
+                        "iosurf_create_malformed ch={channel_id} plen={}",
+                        packet.payload.len()
+                    ));
+                }
+            }
+        }
+        CHILD_OP_IOSURF_DESTROY if iosurf_events_active => {
+            crate::runtime::drain::note_store_route("child_iosurf_destroy");
+            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfDestroy::decode(&packet.payload) {
+                Some(msg) => {
+                    for plane in 0..reims_vgpu_protocol::iosurface_events::MAX_IOSURF_PLANES as u32 {
+                        crate::runtime::iosurface_registry::shadow::note_shadow_event(
+                            msg.surface_id,
+                            plane,
+                            crate::runtime::iosurface_registry::PlaneEvent::GuestDestroy,
+                        );
+                    }
+                }
+                None => {
+                    crate::observe::fail(format!(
+                        "iosurf_destroy_malformed ch={channel_id} plen={}",
+                        packet.payload.len()
+                    ));
+                }
+            }
+        }
+        CHILD_OP_IOSURF_USECOUNT if iosurf_events_active => {
+            crate::runtime::drain::note_store_route("child_iosurf_usecount");
+            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfUsecount::decode(&packet.payload) {
+                Some(_msg) => {
+                    // Use-count updates do not alter plane residency directly (destroy does).
+                }
+                None => {
+                    crate::observe::fail(format!(
+                        "iosurf_usecount_malformed ch={channel_id} plen={}",
+                        packet.payload.len()
+                    ));
+                }
+            }
+        }
+        CHILD_OP_IOSURF_LOCK if iosurf_events_active => {
+            crate::runtime::drain::note_store_route("child_iosurf_lock");
+            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfLock::decode(&packet.payload) {
+                Some(msg) => {
+                    let current_state = crate::runtime::iosurface_registry::shadow::with_shadow(|reg| {
+                        reg.query_state(msg.surface_id, 0)
+                    })
+                    .unwrap_or(crate::runtime::iosurface_registry::PlaneState::Created);
+
+                    let action = crate::runtime::iosurface_registry::readback::evaluate_lock_sync(
+                        msg.surface_id,
+                        0,
+                        current_state,
+                        msg.options,
+                        0,
+                    );
+                    if let crate::runtime::iosurface_registry::readback::ReadbackAction::ScheduleReadback {
+                        surface_id,
+                        plane,
+                        ..
+                    } = action
+                    {
+                        crate::runtime::iosurface_registry::shadow::note_shadow_event(
+                            surface_id,
+                            plane,
+                            crate::runtime::iosurface_registry::PlaneEvent::ReadbackCompleted,
+                        );
+                    }
+                }
+                None => {
+                    crate::observe::fail(format!(
+                        "iosurf_lock_malformed ch={channel_id} plen={}",
+                        packet.payload.len()
+                    ));
+                }
+            }
+        }
+        CHILD_OP_IOSURF_UNLOCK if iosurf_events_active => {
+            crate::runtime::drain::note_store_route("child_iosurf_unlock");
+            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfUnlock::decode(&packet.payload) {
+                Some(msg) => {
+                    let read_only = (msg.options & reims_vgpu_protocol::iosurface_events::IOSURF_LOCK_READ_ONLY) != 0;
+                    if !read_only {
+                        for plane in 0..reims_vgpu_protocol::iosurface_events::MAX_IOSURF_PLANES as u32 {
+                            crate::runtime::iosurface_registry::shadow::note_shadow_event(
+                                msg.surface_id,
+                                plane,
+                                crate::runtime::iosurface_registry::PlaneEvent::CpuWriteEvidence {
+                                    dirty_rect: msg.dirty_rect_valid != 0,
+                                },
+                            );
+                        }
+                    }
+                }
+                None => {
+                    crate::observe::fail(format!(
+                        "iosurf_unlock_malformed ch={channel_id} plen={}",
+                        packet.payload.len()
+                    ));
+                }
+            }
+        }
+        CHILD_OP_IOSURF_READBACK_REQ if iosurf_events_active => {
+            crate::runtime::drain::note_store_route("child_iosurf_readback_req");
+            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfReadbackReq::decode(&packet.payload) {
+                Some(msg) => {
+                    let current_state = crate::runtime::iosurface_registry::shadow::with_shadow(|reg| {
+                        reg.query_state(msg.surface_id, msg.plane)
+                    })
+                    .unwrap_or(crate::runtime::iosurface_registry::PlaneState::Created);
+
+                    let action = crate::runtime::iosurface_registry::readback::evaluate_readback_req(
+                        msg.surface_id,
+                        msg.plane,
+                        current_state,
+                        msg.sequence,
+                    );
+                    if let crate::runtime::iosurface_registry::readback::ReadbackAction::ScheduleReadback {
+                        surface_id,
+                        plane,
+                        sequence,
+                    } = action
+                    {
+                        crate::runtime::iosurface_registry::shadow::note_shadow_event(
+                            surface_id,
+                            plane,
+                            crate::runtime::iosurface_registry::PlaneEvent::ReadbackCompleted,
+                        );
+                        let _done = crate::runtime::iosurface_registry::readback::complete_readback(
+                            surface_id,
+                            plane,
+                            sequence,
+                        );
+                    }
+                }
+                None => {
+                    crate::observe::fail(format!(
+                        "iosurf_readback_req_malformed ch={channel_id} plen={}",
+                        packet.payload.len()
+                    ));
+                }
+            }
+        }
+        CHILD_OP_IOSURF_READBACK_DONE if iosurf_events_active => {
+            crate::runtime::drain::note_store_route("child_iosurf_readback_done");
+            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfReadbackDone::decode(&packet.payload) {
+                Some(msg) => {
+                    crate::runtime::iosurface_registry::shadow::note_shadow_event(
+                        msg.surface_id,
+                        msg.plane,
+                        crate::runtime::iosurface_registry::PlaneEvent::ReadbackCompleted,
+                    );
+                    crate::runtime::iosurface_registry::census::note_readback_done();
+                }
+                None => {
+                    crate::observe::fail(format!(
+                        "iosurf_readback_done_malformed ch={channel_id} plen={}",
+                        packet.payload.len()
+                    ));
+                }
             }
         }
         // The reference host's retired slots. Its shared handler accepts the

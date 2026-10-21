@@ -1666,6 +1666,27 @@ pub const LAB_IOSURFACE_REGISTRY_SHADOW: &str = "REIMS_VGPU_LAB_IOSURFACE_REGIST
 /// Cures disappearing icons and swipe stalls by holding persistent VkImages for GpuAuthoritative planes.
 pub const LAB_IOSURFACE_PERSISTENT_GPU: &str = "REIMS_VGPU_LAB_IOSURFACE_PERSISTENT_GPU";
 
+/// **Default off (lab).** Phase 3 guest IOSurface lifecycle & synchronization event
+/// protocol (`CAP_IOSURFACE_EVENTS` and `REIMS_MSG_IOSURF_*`).
+pub const LAB_IOSURFACE_EVENTS: &str = "REIMS_VGPU_LAB_IOSURFACE_EVENTS";
+
+/// **Default off (lab).** Phase 3 persistent host-side VkImage/Metal backing for
+/// CPU-written surfaces, uploading from guest backing when surface seed changes.
+pub const LAB_IOSURFACE_PERSISTENT_CPU: &str = "REIMS_VGPU_LAB_IOSURFACE_PERSISTENT_CPU";
+
+/// **Default off (lab).** Phase 3 compute dispatch memoization for Simulator compositing passes
+/// when input seeds/generations are unchanged.
+pub const LAB_DISPATCH_MEMO: &str = "REIMS_VGPU_LAB_DISPATCH_MEMO";
+
+/// **Default off (lab).** Phase 2/4 narrow write-protect fallback on GPU-authoritative planes lacking CPU-lock coverage.
+pub const LAB_IOSURFACE_WP_FALLBACK: &str = "REIMS_VGPU_LAB_IOSURFACE_WP_FALLBACK";
+
+/// **Default off (lab).** Phase 4.1 coalesced and batched dirty page queries plus per-tick cache.
+pub const LAB_DIRTY_BATCH: &str = "REIMS_VGPU_LAB_DIRTY_BATCH";
+
+/// **Default off (lab).** Phase 4.2 range registration narrowing: host registers ranges, QEMU narrows tracking.
+pub const LAB_DIRTY_NARROW: &str = "REIMS_VGPU_LAB_DIRTY_NARROW";
+
 /// **Default on (v10).** Persist the monolithic `VkPipelineCache` at a stable
 /// per-user path across boots, and serialize/write it off the drain thread.
 pub const PIPELINE_CACHE_PERSIST: &str = "REIMS_VGPU_PIPELINE_CACHE_PERSIST";
