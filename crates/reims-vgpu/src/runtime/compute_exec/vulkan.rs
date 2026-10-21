@@ -13,6 +13,26 @@
 use super::*;
 use crate::runtime::draw::vulkan::gva_span_identity;
 
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+struct ComputeMemoKey {
+    pipeline_ref: u32,
+    grid: [u32; 3],
+    workgroup: [u32; 3],
+    buffer_hashes: Vec<(u32, u64)>,
+    texture_fingerprints: Vec<(u32, u64)>,
+    storage_destinations: Vec<(u32, u32)>,
+}
+
+static COMPUTE_MEMO_CACHE: std::sync::Mutex<Option<reims_vgpu_core::fasthash::FxHashMap<ComputeMemoKey, ()>>> =
+    std::sync::Mutex::new(None);
+
+fn hash_memo_bytes(bytes: &[u8]) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = reims_vgpu_core::fasthash::FxHasher::default();
+    hasher.write(bytes);
+    hasher.finish()
+}
+
 /// The sampled-image bindings that need a neutral texture: those the module
 /// statically uses and `bound` does not cover.
 ///
@@ -1011,6 +1031,88 @@ pub(crate) fn execute_dispatch_linux<M: HostMemory + HostOps>(
         storage_writeonly_count,
     ));
 
+    // Step 3.4 Compute Dispatch Memoization (REIMS_VGPU_LAB_DISPATCH_MEMO)
+    let memo_switch = crate::config::read(crate::config::LAB_DISPATCH_MEMO).0 == crate::config::Switch::On;
+    if memo_switch && buffer_writable_count > 0 {
+        crate::runtime::iosurface_registry::census::note_memo_side_effects();
+    }
+    let memo_candidate = memo_switch && buffer_writable_count == 0 && storage_count > 0;
+    let memo_key = if memo_candidate {
+        let mut buffer_hashes = Vec::with_capacity(staged_bufs.len());
+        for s in &staged_bufs {
+            buffer_hashes.push((s.bind.index, hash_memo_bytes(&s.bytes)));
+        }
+
+        let mut texture_fingerprints = Vec::with_capacity(sampled_count);
+        let mut storage_destinations = Vec::with_capacity(storage_count);
+
+        for t in &staged_tex {
+            if t.is_storage {
+                let dest_id = match &t.writeback {
+                    TextureWriteback::MapperRefTexture { mapping_id, .. } => *mapping_id,
+                    TextureWriteback::Linear { texture_ref, .. } => *texture_ref,
+                    TextureWriteback::None => 0,
+                };
+                storage_destinations.push((t.binding, dest_id));
+            } else {
+                let fp = if !t.bytes.is_empty() {
+                    hash_memo_bytes(&t.bytes)
+                } else if let Some(serve) = &t.rail.serve {
+                    match serve {
+                        ResidentServe::Seed(gen) => *gen as u64,
+                        ResidentServe::Sample(key, gen) => {
+                            use std::hash::{Hash, Hasher};
+                            let mut h = reims_vgpu_core::fasthash::FxHasher::default();
+                            key.hash(&mut h);
+                            h.write_u32(*gen);
+                            h.finish()
+                        }
+                    }
+                } else {
+                    0
+                };
+                texture_fingerprints.push((t.binding, fp));
+            }
+        }
+
+        Some(ComputeMemoKey {
+            pipeline_ref: acc.pipeline_ref,
+            grid: [grid_x, grid_y, grid_z],
+            workgroup: [wg_x, wg_y, wg_z],
+            buffer_hashes,
+            texture_fingerprints,
+            storage_destinations,
+        })
+    } else {
+        None
+    };
+
+    if let Some(ref key) = memo_key {
+        let all_gpu_auth = !key.storage_destinations.is_empty()
+            && key.storage_destinations.iter().all(|&(_, dest_id)| {
+                if dest_id == 0 {
+                    return false;
+                }
+                crate::runtime::iosurface_registry::shadow::with_shadow(|reg| {
+                    reg.query_state(dest_id, 0) == crate::runtime::iosurface_registry::PlaneState::GpuAuthoritative
+                })
+                .unwrap_or(false)
+            });
+
+        if all_gpu_auth {
+            let hit = if let Ok(guard) = COMPUTE_MEMO_CACHE.lock() {
+                guard.as_ref().map_or(false, |map| map.contains_key(key))
+            } else {
+                false
+            };
+            if hit {
+                crate::runtime::iosurface_registry::census::note_memo_skipped();
+                crate::runtime::drain::note_store_route("compute_memo_hit_skipped");
+                return ComputeStatus::Ok;
+            }
+        }
+    }
+
     let mut storage_buffers = Vec::with_capacity(buffer_accesses.len());
     for s in &mut staged_bufs {
         let Some((_, writable)) = buffer_accesses
@@ -1584,6 +1686,26 @@ pub(crate) fn execute_dispatch_linux<M: HostMemory + HostOps>(
         buffer_unused_count,
         staged_tex.len(),
     ));
+
+    if let Some(key) = memo_key {
+        for &(_, dest_id) in &key.storage_destinations {
+            if dest_id != 0 {
+                crate::runtime::iosurface_registry::shadow::note_shadow_event(
+                    dest_id,
+                    0,
+                    crate::runtime::iosurface_registry::PlaneEvent::GpuWrite,
+                );
+            }
+        }
+        if let Ok(mut guard) = COMPUTE_MEMO_CACHE.lock() {
+            let map = guard.get_or_insert_with(reims_vgpu_core::fasthash::FxHashMap::default);
+            if map.len() >= 256 {
+                map.clear();
+            }
+            map.insert(key, ());
+        }
+    }
+
     ComputeStatus::Ok
 }
 

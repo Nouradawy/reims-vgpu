@@ -3581,3 +3581,10 @@ fn a_nil_entry_clears_the_slot_on_the_wire_path_too() {
     assert_eq!(acc.textures.len(), 1);
     assert_eq!(acc.textures[0].index, 0);
 }
+
+#[test]
+fn test_compute_dispatch_memo_census_and_side_effects() {
+    crate::runtime::iosurface_registry::census::note_memo_side_effects();
+    crate::runtime::iosurface_registry::census::note_memo_skipped();
+}
+
