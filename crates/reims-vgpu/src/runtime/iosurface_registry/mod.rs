@@ -8,6 +8,7 @@ pub mod census;
 pub mod readback;
 pub mod shadow;
 pub mod state;
+pub mod formats;
 pub mod upload;
 pub mod views;
 

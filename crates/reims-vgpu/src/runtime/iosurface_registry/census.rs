@@ -101,3 +101,32 @@ pub fn note_subrect_view_admitted() {
     note_store_route("iosurface_subrect_view_admitted");
 }
 
+/// Note that a format was substituted with an emulation or conversion fallback.
+pub fn note_format_fallback(from: &str, _to: &str) {
+    if from == "bgra10_xr" {
+        note_store_route("format_fallback_bgra10_xr_rgba16f");
+    } else if from == "astc_4x4_ldr" || from == "ASTC_4x4_LDR" {
+        note_store_route("format_fallback_astc_4x4_ldr_rgba8");
+    } else if from == "etc2_rgb8" || from == "ETC2_RGB8" {
+        note_store_route("format_fallback_etc2_rgb8_rgba8");
+    } else {
+        note_store_route("format_fallback_general");
+    }
+}
+
+/// Note that a format had no native mapping or fallback and was declined.
+pub fn note_format_unsupported(name: &str) {
+    if name == "astc_4x4_ldr" || name == "ASTC_4x4_LDR" {
+        note_store_route("format_unsupported_astc_4x4_ldr");
+    } else if name == "etc2_rgb8" || name == "ETC2_RGB8" {
+        note_store_route("format_unsupported_etc2_rgb8");
+    } else {
+        note_store_route("format_unsupported_general");
+    }
+}
+
+/// Note that mip generation was unsupported for the format.
+pub fn note_mipgen_unsupported() {
+    note_store_route("format_mipgen_unsupported");
+}
+
