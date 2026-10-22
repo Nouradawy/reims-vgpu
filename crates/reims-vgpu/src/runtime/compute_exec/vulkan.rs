@@ -350,6 +350,14 @@ pub(super) fn mapper_ref_texture_destination<M: HostMemory + HostOps>(
             }
         }
         Err(decline) => {
+            if matches!(
+                decline,
+                crate::runtime::mapping_write::vulkan::GpuWritebackDecline::GuestRefRefused {
+                    refusal: crate::runtime::guest_ram_map::MapRefusal::NoBackendImport
+                }
+            ) {
+                crate::runtime::drain::note_store_route("compute.dst_mapper.copied_fallback");
+            }
             // Named, because the reasons are not interchangeable and the route
             // counter cannot tell them apart. The one that dominates is
             // `ResidentFormatMismatch` — a storage image's format comes from the
