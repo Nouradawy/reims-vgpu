@@ -21404,6 +21404,89 @@ mod vulkan_split_tests {
         assert_eq!(depth.clear_value, 0.25);
     }
 
+    /// Regression guard for Step 5.9 (`render_barrier_resource_fragment`):
+    /// Verifies fragment barrier stage translation and confirms stencil-only
+    /// squircle mask loads preserve LOAD and correct TargetIdentity across rounds
+    /// when colors is empty and when dummy depth attachments (d.texture_ref == 0) are present.
+    #[test]
+    fn render_barrier_resource_fragment_preserves_stencil_and_fragment_barrier() {
+        use reims_vgpu_vulkan::barrier::{translate, StageSupport};
+        use reims_vgpu_core::sync::{BarrierOp, BarrierTarget, RenderStages, ResourceSpan};
+        use ash::vk::PipelineStageFlags2;
+
+        // 1. Fragment barrier stage translation: after: .fragment, before: .fragment
+        // on resources (e.g. `enc.memoryBarrier(resources: [words], after: .fragment, before: .fragment)`).
+        let plan = translate(
+            &BarrierOp {
+                target: BarrierTarget::Resources(ResourceSpan { start: 0, len: 1 }),
+                after_stages: Some(RenderStages(RenderStages::FRAGMENT)),
+                before_stages: Some(RenderStages(RenderStages::FRAGMENT)),
+            },
+            StageSupport { mesh_shader: false },
+        )
+        .expect("fragment resource memory barrier translates cleanly");
+        let expected_fragment = PipelineStageFlags2::FRAGMENT_SHADER
+            | PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+            | PipelineStageFlags2::LATE_FRAGMENT_TESTS
+            | PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
+        assert_eq!(plan.src_stages, expected_fragment);
+        assert_eq!(plan.dst_stages, expected_fragment);
+
+        // 2. Stencil-only squircle mask pass (colors empty) preserves LOAD and derives identity
+        let mut req_squircle = DrawEncodeRequest::default();
+        req_squircle.stencil_attach = Some(crate::runtime::render_pass::StencilAttachment {
+            texture_ref: 50,
+            load_action: MTL_LOAD_ACTION_LOAD,
+            ..Default::default()
+        });
+        req_squircle.viewports = vec![[0.0, 0.0, 60.0, 60.0, 0.0, 1.0]];
+        let state_squircle = depth_state_for(&req_squircle, None);
+        assert!(state_squircle.load, "squircle mask stencil pass must preserve LOAD");
+        assert_eq!(
+            state_squircle.identity,
+            Some(crate::backend::vulkan::engine::TargetIdentity::Texture {
+                ref_: 50,
+                width: 60,
+                height: 60,
+                generation: 0,
+                stencil: true,
+            })
+        );
+
+        // 3. Dummy depth attachment with real stencil attachment preserves stencil LOAD
+        let mut req_dummy_depth = DrawEncodeRequest::default();
+        req_dummy_depth.depth_attach = Some(crate::runtime::render_pass::DepthAttachment {
+            texture_ref: 0,
+            load_action: MTL_LOAD_ACTION_CLEAR,
+            clear_depth: 1.0,
+            ..Default::default()
+        });
+        req_dummy_depth.stencil_attach = Some(crate::runtime::render_pass::StencilAttachment {
+            texture_ref: 51,
+            load_action: MTL_LOAD_ACTION_LOAD,
+            clear_stencil: 0,
+            ..Default::default()
+        });
+        req_dummy_depth.scissors = vec![crate::runtime::render_pass::ScissorRect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 120,
+        }];
+        let state_dummy = depth_state_for(&req_dummy_depth, None);
+        assert!(state_dummy.load, "dummy depth must not override stencil LOAD");
+        assert_eq!(
+            state_dummy.identity,
+            Some(crate::backend::vulkan::engine::TargetIdentity::Texture {
+                ref_: 51,
+                width: 120,
+                height: 120,
+                generation: 0,
+                stencil: true,
+            })
+        );
+    }
+
     /// A record continuing a serialized pass loads what the records before it
     /// wrote, on both halves — the rule is the pass's, not the bound state's.
     #[test]
