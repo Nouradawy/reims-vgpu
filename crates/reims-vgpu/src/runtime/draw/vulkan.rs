@@ -4261,7 +4261,7 @@ fn note_sampled_ref_backing(
 /// asked for a four-byte view of a one-byte image
 /// (`VUID-VkImageViewCreateInfo-image-01761`, p055/p056 validation), a view
 /// that reads past the image. The surface's own format is what its texels are.
-pub(super) fn surface_sample_format(
+pub(crate) fn surface_sample_format(
     state: &DeviceState,
     mid: u32,
     identity: &crate::backend::vulkan::engine::TargetIdentity,
@@ -4271,10 +4271,10 @@ pub(super) fn surface_sample_format(
         return own;
     };
     let declared = crate::runtime::mapping_write::mapping_store_format(m);
-    if pixel_format::store_texel_order(declared).is_some()
-        || pixel_format::bytes_per_pixel(declared).is_none_or(|bpp| bpp == 4)
-    {
-        return own;
+    if let Ok((layout, _, _)) = translate::pixel::sampled_pixels(declared) {
+        if layout.is_four_byte_color() {
+            return own;
+        }
     }
     match translate::pixel::translate(declared) {
         Ok(p) => {
@@ -13668,6 +13668,35 @@ pub(super) fn try_metal2vulkan_draw_with<M: HostMemory + HostOps>(
                     }
                     SampledSourceRequest::Target(identity, format) => {
                         sampled_vk_format = format;
+                        if format == ash::vk::Format::R8_UNORM {
+                            let surface_mid = match &identity {
+                                crate::backend::vulkan::engine::TargetIdentity::Surface { id, .. } => Some(*id),
+                                _ => None,
+                            };
+                            let is_a8 = texture_resource
+                                .as_ref()
+                                .and_then(|r| match r.decoded() {
+                                    Ok(crate::runtime::decode::resource::Descriptor::Texture(tex)) => {
+                                        tex.declared_pixel_format().or(Some(tex.pixel_format))
+                                    }
+                                    _ => None,
+                                })
+                                .or_else(|| {
+                                    resolve_texture_view(acc.shared(), host, req.task_id, texture_ref)
+                                        .and_then(|v| v.pixel_format)
+                                })
+                                .or_else(|| {
+                                    surface_mid.and_then(|mid| {
+                                        acc.shared().mappings.get(&mid).map(|m| {
+                                            crate::runtime::mapping_write::mapping_store_format(m)
+                                        })
+                                    })
+                                })
+                                .is_some_and(|f| f == pixel_format::MTL_FORMAT_A8_UNORM);
+                            if is_a8 {
+                                sampled_components = reims_vgpu_vulkan::pixel::ALPHA_IN_RED;
+                            }
+                        }
                         // The source resolver carries the sampled texture's
                         // exact view format beside the allocation identity. A
                         // resident attachment view is not necessarily the view

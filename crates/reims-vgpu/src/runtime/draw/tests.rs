@@ -9692,3 +9692,87 @@ fn a_buffer_texture_window_is_converted_once_until_its_bytes_change() {
     assert_ne!(fifth.generation, fourth.generation);
     assert_eq!(fifth.bytes[2], 0x11, "B lands in the third RGBA byte");
 }
+
+#[cfg(feature = "backend-vulkan")]
+#[test]
+fn surface_sample_format_preserves_native_format_for_non_four_byte_targets() {
+    use crate::model::MappingEntry;
+    use crate::backend::vulkan::engine::TargetIdentity;
+    use crate::protocol::pixel_format::{
+        MTL_FORMAT_A8_UNORM, MTL_FORMAT_BGR10A2_UNORM, MTL_FORMAT_BGRA8_UNORM,
+        MTL_FORMAT_R8_UNORM, MTL_FORMAT_RGB10A2_UNORM, MTL_FORMAT_RGBA16_FLOAT,
+        MTL_FORMAT_RGBA8_UNORM,
+    };
+
+    let mut state = DeviceState::new(DeviceId(1), PAGE_SHIFT_ARM64E);
+    let identity = TargetIdentity::Surface {
+        id: 42,
+        width: 64,
+        height: 64,
+        generation: 1,
+        format: ash::vk::Format::B8G8R8A8_UNORM,
+    };
+
+    // Four-byte formats keep the identity's own resident format.
+    state.mappings.insert(
+        42,
+        MappingEntry {
+            has_geom: true,
+            width: 64,
+            height: 64,
+            format: MTL_FORMAT_BGRA8_UNORM,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        surface_sample_format(&state, 42, &identity),
+        ash::vk::Format::B8G8R8A8_UNORM
+    );
+
+    state.mappings.get_mut(&42).unwrap().format = MTL_FORMAT_RGBA8_UNORM;
+    assert_eq!(
+        surface_sample_format(&state, 42, &identity),
+        ash::vk::Format::B8G8R8A8_UNORM
+    );
+
+    // Non-4-byte formats sample through their own declared formats.
+    state.mappings.get_mut(&42).unwrap().format = MTL_FORMAT_R8_UNORM;
+    assert_eq!(
+        surface_sample_format(&state, 42, &identity),
+        ash::vk::Format::R8_UNORM
+    );
+
+    state.mappings.get_mut(&42).unwrap().format = MTL_FORMAT_A8_UNORM;
+    assert_eq!(
+        surface_sample_format(&state, 42, &identity),
+        ash::vk::Format::R8_UNORM
+    );
+
+    state.mappings.get_mut(&42).unwrap().format = MTL_FORMAT_RGBA16_FLOAT;
+    assert_eq!(
+        surface_sample_format(&state, 42, &identity),
+        ash::vk::Format::R16G16B16A16_SFLOAT
+    );
+
+    state.mappings.get_mut(&42).unwrap().format = MTL_FORMAT_RGB10A2_UNORM;
+    assert_eq!(
+        surface_sample_format(&state, 42, &identity),
+        ash::vk::Format::A2B10G10R10_UNORM_PACK32
+    );
+
+    state.mappings.get_mut(&42).unwrap().format = MTL_FORMAT_BGR10A2_UNORM;
+    assert_eq!(
+        surface_sample_format(&state, 42, &identity),
+        ash::vk::Format::A2R10G10B10_UNORM_PACK32
+    );
+}
+
+#[cfg(feature = "backend-vulkan")]
+#[test]
+fn r8_unorm_target_preserves_alpha_in_red_swizzle_when_declared_as_a8() {
+    let plan = reims_vgpu_vulkan::pixel::ALPHA_IN_RED;
+    let view_swizzle = crate::protocol::pixel_format::swizzle_identity();
+    let composed = view_swizzle.after(&plan);
+    assert_eq!(composed, plan);
+}
+
