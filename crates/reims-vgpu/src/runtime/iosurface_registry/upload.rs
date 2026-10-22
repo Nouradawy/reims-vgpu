@@ -153,6 +153,80 @@ pub fn repack_strided_rows(
     Ok(())
 }
 
+/// Extent and index of an individual mipmap level.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MipLevelExtent {
+    pub level: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Plan describing the sequence of downsample blits required for mip generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MipGenerationPlan {
+    pub base_width: u32,
+    pub base_height: u32,
+    pub level_count: u32,
+    pub levels: Vec<MipLevelExtent>,
+}
+
+/// Computes the maximum valid mip levels for a given 2D extent, clamped by requested levels.
+pub fn compute_mip_level_count(width: u32, height: u32, requested_levels: u32) -> u32 {
+    if width == 0 || height == 0 || requested_levels == 0 {
+        return 1;
+    }
+    let max_dim = width.max(height);
+    // 32 - leading_zeros gives floor(log2(max_dim)) + 1
+    let full_chain_levels = 32 - max_dim.leading_zeros();
+    requested_levels.min(full_chain_levels).max(1)
+}
+
+/// Plans mip generation under `REIMS_VGPU_LAB_MIPGEN` for a CPU-uploaded sampled image.
+///
+/// Returns `Some(MipGenerationPlan)` with N levels if enabled, requested_levels > 1,
+/// and the format supports blit filtering.
+/// Returns `None` if disabled or single-level.
+/// Emits `format_mipgen_unsupported` if requested but format cannot be blitted.
+pub fn plan_mip_generation(
+    width: u32,
+    height: u32,
+    requested_levels: u32,
+    format_supports_blit: bool,
+    enabled_by_switch: bool,
+) -> Option<MipGenerationPlan> {
+    if !enabled_by_switch || requested_levels <= 1 || width == 0 || height == 0 {
+        return None;
+    }
+
+    if !format_supports_blit {
+        census::note_mipgen_unsupported();
+        return None;
+    }
+
+    let level_count = compute_mip_level_count(width, height, requested_levels);
+    if level_count <= 1 {
+        return None;
+    }
+
+    let mut levels = Vec::with_capacity(level_count as usize);
+    for lvl in 0..level_count {
+        let w = (width >> lvl).max(1);
+        let h = (height >> lvl).max(1);
+        levels.push(MipLevelExtent {
+            level: lvl,
+            width: w,
+            height: h,
+        });
+    }
+
+    Some(MipGenerationPlan {
+        base_width: width,
+        base_height: height,
+        level_count,
+        levels,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,5 +392,44 @@ mod tests {
         assert_eq!(&dst[0..16], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
         assert_eq!(&dst[16..32], &[21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]);
         assert_eq!(&dst[32..48], &[41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56]);
+    }
+
+    #[test]
+    fn mip_generation_planning_64x64() {
+        let plan = plan_mip_generation(64, 64, 10, true, true)
+            .expect("should produce plan when enabled with blit support");
+
+        assert_eq!(plan.level_count, 7);
+        assert_eq!(plan.levels[0], MipLevelExtent { level: 0, width: 64, height: 64 });
+        assert_eq!(plan.levels[1], MipLevelExtent { level: 1, width: 32, height: 32 });
+        assert_eq!(plan.levels[2], MipLevelExtent { level: 2, width: 16, height: 16 });
+        assert_eq!(plan.levels[3], MipLevelExtent { level: 3, width: 8, height: 8 });
+        assert_eq!(plan.levels[4], MipLevelExtent { level: 4, width: 4, height: 4 });
+        assert_eq!(plan.levels[5], MipLevelExtent { level: 5, width: 2, height: 2 });
+        assert_eq!(plan.levels[6], MipLevelExtent { level: 6, width: 1, height: 1 });
+    }
+
+    #[test]
+    fn mip_generation_planning_non_square() {
+        let plan = plan_mip_generation(64, 16, 4, true, true)
+            .expect("should produce 4 levels");
+
+        assert_eq!(plan.level_count, 4);
+        assert_eq!(plan.levels[0], MipLevelExtent { level: 0, width: 64, height: 16 });
+        assert_eq!(plan.levels[1], MipLevelExtent { level: 1, width: 32, height: 8 });
+        assert_eq!(plan.levels[2], MipLevelExtent { level: 2, width: 16, height: 4 });
+        assert_eq!(plan.levels[3], MipLevelExtent { level: 3, width: 8, height: 2 });
+    }
+
+    #[test]
+    fn mip_generation_disabled_or_unsupported() {
+        // Disabled by switch
+        assert_eq!(plan_mip_generation(64, 64, 4, true, false), None);
+
+        // Single level requested
+        assert_eq!(plan_mip_generation(64, 64, 1, true, true), None);
+
+        // Blit not supported emits slug and returns None
+        assert_eq!(plan_mip_generation(64, 64, 4, false, true), None);
     }
 }

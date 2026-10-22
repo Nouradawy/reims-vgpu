@@ -18,6 +18,7 @@ mod tests;
 pub use readback::{complete_readback, evaluate_lock_sync, evaluate_readback_req, ReadbackAction};
 pub use state::{Action, ActionList, PlaneEvent, PlaneState};
 pub use upload::{
-    compute_upload_plan, repack_strided_rows, StrideMode, UploadDecision, UploadPlan, UploadRegion,
+    compute_mip_level_count, compute_upload_plan, plan_mip_generation, repack_strided_rows,
+    MipGenerationPlan, MipLevelExtent, StrideMode, UploadDecision, UploadPlan, UploadRegion,
 };
 pub use views::{validate_subrect, SubrectViewKey, ViewCache, ViewDecline};
