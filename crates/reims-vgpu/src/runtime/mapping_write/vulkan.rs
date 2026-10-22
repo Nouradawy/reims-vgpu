@@ -170,6 +170,13 @@ impl crate::observe::Decline for GpuWritebackDecline {
             Self::Engine { inner } => crate::observe::Decline::fields(inner),
         }
     }
+
+    fn owner(&self) -> &'static str {
+        match self {
+            Self::Engine { inner } => inner.owner(),
+            _ => core::any::type_name::<Self>(),
+        }
+    }
 }
 
 crate::observe::decline::decline_display!(GpuWritebackDecline);
@@ -1011,6 +1018,8 @@ mod tests {
             refusal: MapRefusal::GpaNotInAnyImport { gpa: 0x1000 },
         };
         assert_ne!(via(&not_in_import), via(&scattered));
+        assert!(!no_import.owner().is_empty());
+        assert!(!scattered.owner().is_empty());
     }
 
     /// The mapper-ref-texture licence judges the window it is given, not the surface's extent.
@@ -1035,6 +1044,8 @@ mod tests {
         use crate::protocol::pixel_format::MTL_FORMAT_BGRA8_UNORM;
         const PAGE: u64 = 1 << PAGE_SHIFT_X86;
 
+        crate::runtime::guest_ram::forget_import_limits();
+        crate::runtime::guest_ram_map::reset();
         let mut state = DeviceState::new(DeviceId(9), PAGE_SHIFT_X86);
         let mut host = FakeHost::new();
         let base_pfn = 0x40u32;
