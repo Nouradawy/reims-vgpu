@@ -3588,3 +3588,106 @@ fn test_compute_dispatch_memo_census_and_side_effects() {
     crate::runtime::iosurface_registry::census::note_memo_skipped();
 }
 
+#[cfg(feature = "backend-vulkan")]
+#[test]
+fn compute_sampled_formats_admit_srgb_xr_and_native_formats() {
+    use crate::backend::vulkan::engine::StorageImageFormat;
+    use reims_vgpu_protocol::pixel_format as pf;
+
+    // Verify 0x51 (BGRA8Unorm_sRGB), 0x47 (RGBA8Unorm_sRGB), 0x73 (RGBA16Float),
+    // 0x5a (RGB10A2), 0x5e (BGR10A2), and 0x0a (R8Unorm)
+    assert_eq!(
+        mtl_to_engine_sampled(pf::MTL_FORMAT_BGRA8_UNORM_SRGB),
+        Some(StorageImageFormat::Bgra8Unorm),
+        "0x51 (BGRA8Unorm_sRGB) must be admitted for compute sampling"
+    );
+    assert_eq!(
+        mtl_to_engine_sampled(pf::MTL_FORMAT_RGBA8_UNORM_SRGB),
+        Some(StorageImageFormat::Rgba8Unorm),
+        "0x47 (RGBA8Unorm_sRGB) must be admitted for compute sampling"
+    );
+    assert_eq!(
+        mtl_to_engine_sampled(pf::MTL_FORMAT_RGBA16_FLOAT),
+        Some(StorageImageFormat::Rgba16Float),
+        "0x73 (RGBA16Float) must be admitted for compute sampling"
+    );
+    assert_eq!(
+        mtl_to_engine_sampled(pf::MTL_FORMAT_RGB10A2_UNORM),
+        Some(StorageImageFormat::Rgb10a2Unorm),
+        "0x5a (RGB10A2_UNORM) must be admitted for compute sampling"
+    );
+    assert_eq!(
+        mtl_to_engine_sampled(pf::MTL_FORMAT_BGR10A2_UNORM),
+        Some(StorageImageFormat::Bgr10a2Unorm),
+        "0x5e (BGR10A2_UNORM) must be admitted for compute sampling"
+    );
+    assert_eq!(
+        mtl_to_engine_sampled(pf::MTL_FORMAT_R8_UNORM),
+        Some(StorageImageFormat::R8Unorm),
+        "0x0a (R8Unorm) must be admitted for compute sampling"
+    );
+}
+
+#[cfg(feature = "backend-vulkan")]
+#[test]
+fn compute_dst_mapper_ref_texture_on_no_backend_import_routes_to_copied_fallback() {
+    use crate::backend::vulkan::engine::ComputeImageDestination;
+    use crate::runtime::drain::store_route_count;
+    use ash::vk;
+    use reims_vgpu_protocol::pixel_format as pf;
+
+    crate::runtime::guest_ram_map::reset();
+    let mut state = crate::model::DeviceState::new(DeviceId::default(), PAGE_SHIFT_ARM64E);
+    let mut host = FakeHost::default();
+    let mapping_id = 999;
+    state.mappings.insert(
+        mapping_id,
+        crate::model::MappingEntry {
+            mapped: true,
+            has_geom: true,
+            width: 4,
+            height: 4,
+            page_entries: vec![0x1234_5001],
+            content_generation: 2,
+            format: pf::MTL_FORMAT_RGBA8_UNORM,
+            ..Default::default()
+        },
+    );
+
+    let staged_tex = StagedTexture {
+        binding: 0,
+        pixel_format: pf::MTL_FORMAT_RGBA8_UNORM,
+        storage_selector: Some(pixel_format::StorageImageSelector::Rgba8Unorm),
+        width: 4,
+        height: 4,
+        mip_levels: 1,
+        bytes: vec![0u8; 64],
+        is_storage: true,
+        writeback: TextureWriteback::MapperRefTexture {
+            mapping_id,
+            surface_offset: 0,
+            surface_bpr: 16,
+            span_end: 64,
+            width: 4,
+            height: 4,
+            format: pf::MTL_FORMAT_RGBA8_UNORM,
+        },
+        rail: vulkan::VulkanStage::default(),
+    };
+
+    let before_fallback = store_route_count("compute.dst_mapper.copied_fallback");
+    let dest = direct_destination(&mut state, &mut host, &staged_tex, vk::Format::R8G8B8A8_UNORM);
+
+    assert!(
+        matches!(dest, ComputeImageDestination::Host),
+        "NoBackendImport destination must fall back to Host readback/copy"
+    );
+    assert_eq!(
+        store_route_count("compute.dst_mapper.copied_fallback"),
+        before_fallback + 1,
+        "compute.dst_mapper.copied_fallback counter must be incremented"
+    );
+}
+
+
+
