@@ -2192,6 +2192,13 @@ impl crate::observe::Decline for GvaWritebackDecline {
             Self::CopiedWriteRefused { err } => vec![("err", format!("{err:?}"))],
         }
     }
+
+    fn owner(&self) -> &'static str {
+        match self {
+            Self::Engine { inner } => inner.owner(),
+            _ => core::any::type_name::<Self>(),
+        }
+    }
 }
 
 crate::observe::decline::decline_display!(GvaWritebackDecline);
@@ -2333,8 +2340,8 @@ pub(crate) fn store_gva_frame<M: HostMemory + HostOps>(
             crate::backend::vulkan::translate::pixel::sampled_pixels(c0.format)
                 .ok()
                 .map(|(layout, _, _)| layout)
-        })
-        .filter(|layout| !layout.is_four_byte_color());
+                .filter(|layout| !layout.is_four_byte_color())
+        });
     let readback = crate::backend::vulkan::engine::read_target_keeping(identity, want_native_layout)
         .map_err(|inner| GvaWritebackDecline::CopiedReadRefused { inner })?;
     // Two ways to land a frame, and which one is decided by what the readback
@@ -2400,6 +2407,12 @@ pub(crate) fn store_gva_frame<M: HostMemory + HostOps>(
         }
     };
     crate::backend::vulkan::engine::note_resident_content_copied_out(identity);
+    let epoch = if c0.mapping_id != 0 {
+        state.note_surface_content_published(c0.mapping_id)
+    } else {
+        1
+    };
+    crate::backend::vulkan::engine::stamp_resident_content_epoch(identity, epoch);
     // Arm the write witness exactly as the direct arm does: the pages now hold
     // this resident's frame, texel for texel on the native arm and byte for byte
     // on the eight-bit one. Without it a later LOAD or sample never reads quiet
@@ -2408,12 +2421,14 @@ pub(crate) fn store_gva_frame<M: HostMemory + HostOps>(
     // whole-frame landing: a store that skipped ranges left guest bytes in the
     // plane that the resident does not hold.
     if skip.is_empty() {
-        if let (Some(key), Some(gpas)) = (
-            crate::backend::vulkan::gva_witness_key(identity),
-            pages.ordered_complete(c0.target_gva, state.page_size()),
-        ) {
-            let gpas = gpas.to_vec();
-            crate::runtime::gva_store_witness::note_store_eager(state, host, key, &gpas);
+        if let Some(key) = crate::backend::vulkan::gva_witness_key(identity) {
+            let gpas = pages
+                .ordered_complete(c0.target_gva, state.page_size())
+                .map(|s| s.to_vec())
+                .or_else(|| Some(pages.ordered().to_vec()));
+            if let Some(gpas) = gpas {
+                crate::runtime::gva_store_witness::note_store_eager(state, host, key, &gpas);
+            }
         }
     }
     crate::runtime::drain::note_store_route("gva_flush_copied");
@@ -2487,6 +2502,9 @@ fn land_gva_frame_bytes<M: HostMemory + HostOps>(
     )
     .map_err(|err| GvaWritebackDecline::CopiedWriteRefused { err })?;
     crate::runtime::surface_cache::forget_gva_copies(state, task_id, c0.target_gva, texture_ref);
+    if c0.texture_ref != 0 && c0.texture_ref != texture_ref {
+        crate::runtime::surface_cache::forget_gva_copies(state, task_id, c0.target_gva, c0.texture_ref);
+    }
     Ok(extent)
 }
 
@@ -2798,6 +2816,7 @@ pub(crate) fn copy_resident_into_gva_plane<M: HostMemory + HostOps>(
     // exist, so the reclaim paths may take it — the same handover
     // `store_render_frame` performs in `finish`.
     crate::backend::vulkan::engine::note_resident_content_copied_out(identity);
+    crate::backend::vulkan::engine::stamp_resident_content_epoch(identity, 1);
     // Arm the GVA write witness over the pages this Store just published, the
     // twin of `mapper::stamp_guest_write_gen` on the mapper-ref-texture rail. It is what
     // lets a later reader ask whether these pages still hold this frame without
@@ -2984,6 +3003,7 @@ mod gva_copying_arm_tests {
             "gvawb_copied_write_refused",
             "an unlicensed write is a named refusal, not a silent skip"
         );
+        assert!(!crate::observe::Decline::owner(&refusal).is_empty());
         let gpa = (DATA_BASE_PFN + 1) << PAGE_SHIFT_ARM64E;
         let mut got = [0u8; (W * 4) as usize];
         crate::runtime::host::HostMemory::read_gpa(&host, gpa, &mut got)

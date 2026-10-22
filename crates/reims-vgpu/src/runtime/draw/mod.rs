@@ -3476,6 +3476,11 @@ impl StoreTargetPages {
         let want = reims_vgpu_paging::span::pages_spanned(gva, self.span, page_size);
         (self.ordered.len() as u64 == want).then_some(&self.ordered[..])
     }
+
+    #[cfg_attr(not(feature = "backend-vulkan"), allow(dead_code))]
+    pub(crate) fn ordered(&self) -> &[u64] {
+        &self.ordered
+    }
 }
 
 /// [`write_gva_rgba8`] bounded to the guest pages a deferred window was armed
