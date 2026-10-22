@@ -121,6 +121,38 @@ pub fn compute_upload_plan(
     })
 }
 
+/// Repack rows from a strided source buffer into a tightly packed destination buffer.
+///
+/// Used as a fallback when `desc.bytes_per_row` is not a multiple of `bytes_per_element`
+/// or when host alignment constraints require tightly packed rows before `VkBufferImageCopy`.
+pub fn repack_strided_rows(
+    src: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    height: usize,
+    src_stride: usize,
+    bpe: usize,
+) -> Result<(), &'static str> {
+    if width == 0 || height == 0 || bpe == 0 {
+        return Ok(());
+    }
+    let tight_row_bytes = width.checked_mul(bpe).ok_or("repack: tight_row_bytes overflow")?;
+    let required_dst = tight_row_bytes.checked_mul(height).ok_or("repack: dst overflow")?;
+    if dst.len() < required_dst {
+        return Err("repack: dst buffer too small");
+    }
+    for row in 0..height {
+        let src_off = row.checked_mul(src_stride).ok_or("repack: src_off overflow")?;
+        let src_end = src_off.checked_add(tight_row_bytes).ok_or("repack: src_end overflow")?;
+        if src.len() < src_end {
+            return Err("repack: src buffer too small for row");
+        }
+        let dst_off = row.checked_mul(tight_row_bytes).ok_or("repack: dst_off overflow")?;
+        dst[dst_off..dst_off + tight_row_bytes].copy_from_slice(&src[src_off..src_end]);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,10 +240,33 @@ mod tests {
     }
 
     #[test]
-    fn stride_calculation_direct() {
-        // Padded stride: width 100, bytes_per_element 4 -> 400 bytes, but bytes_per_row is 512
-        let desc = sample_desc(100, 100, 512, 4);
+    fn stride_calculation_tight() {
+        // Tight stride: width 64, bpe 4 -> bytes_per_row is exactly 256
+        let desc = sample_desc(64, 64, 256, 4);
         let decision = compute_upload_plan(&desc, 1, None, None);
+        match decision {
+            UploadDecision::Execute(plan) => {
+                assert_eq!(plan.stride_mode, StrideMode::Direct { buffer_row_length: 64 });
+            }
+            _ => panic!("expected execute"),
+        }
+    }
+
+    #[test]
+    fn stride_calculation_direct_padded_64_and_256() {
+        // Padded to 64: width 50, bpe 4 (tight 200), bpr padded to 256 (divisible by 4 and 64)
+        let desc_64 = sample_desc(50, 50, 256, 4);
+        let decision = compute_upload_plan(&desc_64, 1, None, None);
+        match decision {
+            UploadDecision::Execute(plan) => {
+                assert_eq!(plan.stride_mode, StrideMode::Direct { buffer_row_length: 64 });
+            }
+            _ => panic!("expected execute"),
+        }
+
+        // Padded to 256: width 100, bpe 4 (tight 400), bpr padded to 512 (divisible by 4 and 256)
+        let desc_256 = sample_desc(100, 100, 512, 4);
+        let decision = compute_upload_plan(&desc_256, 1, None, None);
         match decision {
             UploadDecision::Execute(plan) => {
                 assert_eq!(plan.stride_mode, StrideMode::Direct { buffer_row_length: 128 });
@@ -222,7 +277,7 @@ mod tests {
 
     #[test]
     fn stride_calculation_repack_not_divisible() {
-        // Stride 510 bytes with 4 bytes per element does not divide evenly
+        // Stride 510 bytes with 4 bytes per element does not divide evenly -> repack
         let desc = sample_desc(100, 100, 510, 4);
         let decision = compute_upload_plan(&desc, 1, None, None);
         match decision {
@@ -244,5 +299,24 @@ mod tests {
             }
             _ => panic!("expected execute"),
         }
+    }
+
+    #[test]
+    fn repack_strided_rows_round_trip() {
+        // Source: 3 rows of 4 texels (16 bytes) with 24-byte stride (8 bytes padding per row)
+        let mut src = vec![0u8; 24 * 3];
+        // Row 0
+        src[0..16].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+        // Row 1
+        src[24..40].copy_from_slice(&[21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]);
+        // Row 2
+        src[48..64].copy_from_slice(&[41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56]);
+
+        let mut dst = vec![0u8; 16 * 3];
+        assert_eq!(repack_strided_rows(&src, &mut dst, 4, 3, 24, 4), Ok(()));
+
+        assert_eq!(&dst[0..16], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+        assert_eq!(&dst[16..32], &[21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]);
+        assert_eq!(&dst[32..48], &[41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56]);
     }
 }
