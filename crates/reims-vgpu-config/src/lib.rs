@@ -1687,6 +1687,15 @@ pub const LAB_DIRTY_BATCH: &str = "REIMS_VGPU_LAB_DIRTY_BATCH";
 /// **Default off (lab).** Phase 4.2 range registration narrowing: host registers ranges, QEMU narrows tracking.
 pub const LAB_DIRTY_NARROW: &str = "REIMS_VGPU_LAB_DIRTY_NARROW";
 
+/// **Default off (lab).** Phase 5.1 relaxed sampled-size check and persistent subrect view aliases.
+pub const LAB_IOSURFACE_SUBRECT_VIEWS: &str = "REIMS_VGPU_LAB_IOSURFACE_SUBRECT_VIEWS";
+
+/// **Default off (lab).** Phase 5.3 extended format table, ASTC/ETC2 decoding, and XR unpackers.
+pub const LAB_FORMATS_EXT: &str = "REIMS_VGPU_LAB_FORMATS_EXT";
+
+/// **Default off (lab).** Phase 5.4 mip generation for CPU-uploaded sampled images.
+pub const LAB_MIPGEN: &str = "REIMS_VGPU_LAB_MIPGEN";
+
 /// **Default on (v10).** Persist the monolithic `VkPipelineCache` at a stable
 /// per-user path across boots, and serialize/write it off the drain thread.
 pub const PIPELINE_CACHE_PERSIST: &str = "REIMS_VGPU_PIPELINE_CACHE_PERSIST";
