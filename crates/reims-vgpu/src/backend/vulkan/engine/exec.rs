@@ -2334,7 +2334,14 @@ pub(crate) fn validate_v1(req: &DrawRequest) -> Result<(), DrawError> {
                         },
                     ));
                 }
-                if identity.width() != image.width || identity.height() != image.height {
+                let is_region = image.byte_origin == super::SampledByteOrigin::SerializedSurfaceView;
+                let subrect_on = crate::config::read(crate::config::LAB_IOSURFACE_SUBRECT_VIEWS).0 == crate::config::Switch::On;
+                let fits_within = image.width <= identity.width() && image.height <= identity.height();
+                if (is_region || subrect_on) && fits_within {
+                    if subrect_on && (identity.width() != image.width || identity.height() != image.height) {
+                        crate::runtime::drain::note_store_route("iosurface_subrect_view_admitted");
+                    }
+                } else if identity.width() != image.width || identity.height() != image.height {
                     return Err(DrawError::DrawValidation(
                         DrawValidationDecline::ResidentSampleGeometry {
                             binding: image.binding,
@@ -4932,7 +4939,9 @@ pub(crate) unsafe fn execute_draw_inner(
                 // TEMP (lab, RTV_GPU): a serialized view over this resident's
                 // surface — its bind extent is the resident's top-left, read
                 // through the bind's format, and it always takes a snapshot.
-                let region = resource.byte_origin == super::SampledByteOrigin::SerializedSurfaceView;
+                let is_region = resource.byte_origin == super::SampledByteOrigin::SerializedSurfaceView;
+                let subrect_on = crate::config::read(crate::config::LAB_IOSURFACE_SUBRECT_VIEWS).0 == crate::config::Switch::On;
+                let region = is_region || subrect_on;
                 // Reading a resident is using it. Marked before the lookup so
                 // the refusal paths below cannot skip it: a resident whose
                 // content is not ready yet, or whose geometry disagrees with
@@ -4981,6 +4990,9 @@ pub(crate) unsafe fn execute_draw_inner(
                     Some((_, _, _, _, _, width, height, _, _))
                         if region && resource.width <= *width && resource.height <= *height =>
                     {
+                        if subrect_on && (*width != resource.width || *height != resource.height) {
+                            crate::runtime::drain::note_store_route("iosurface_subrect_view_admitted");
+                        }
                         (*width, *height)
                     }
                     _ => (resource.width, resource.height),

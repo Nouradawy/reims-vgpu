@@ -78,3 +78,26 @@ pub fn note_iosurface_wp_fault() {
     note_store_route("iosurface_wp_fault");
 }
 
+/// Note that a view was declined with a specific typed reason.
+pub fn note_view_declined(reason: &str) {
+    if reason == "geometry" {
+        note_store_route("iosurface_view_declined_geometry");
+    } else if reason == "stride" {
+        note_store_route("iosurface_view_declined_stride");
+    } else if reason == "format" {
+        note_store_route("iosurface_view_declined_format");
+    } else {
+        note_store_route("iosurface_view_declined_other");
+    }
+}
+
+/// Note that a sub-rect alias could not be represented directly.
+pub fn note_view_subrect_unsupported() {
+    note_store_route("iosurface_view_subrect_unsupported");
+}
+
+/// Note that a sub-rect view was admitted under LAB_IOSURFACE_SUBRECT_VIEWS.
+pub fn note_subrect_view_admitted() {
+    note_store_route("iosurface_subrect_view_admitted");
+}
+

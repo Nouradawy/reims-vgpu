@@ -9,6 +9,7 @@ pub mod readback;
 pub mod shadow;
 pub mod state;
 pub mod upload;
+pub mod views;
 
 #[cfg(test)]
 mod tests;
@@ -16,3 +17,4 @@ mod tests;
 pub use readback::{complete_readback, evaluate_lock_sync, evaluate_readback_req, ReadbackAction};
 pub use state::{Action, ActionList, PlaneEvent, PlaneState};
 pub use upload::{compute_upload_plan, StrideMode, UploadDecision, UploadPlan, UploadRegion};
+pub use views::{validate_subrect, SubrectViewKey, ViewCache, ViewDecline};
