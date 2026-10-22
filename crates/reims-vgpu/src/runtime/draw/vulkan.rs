@@ -14074,10 +14074,54 @@ pub(super) fn try_metal2vulkan_draw_with<M: HostMemory + HostOps>(
                     },
                 ));
             }
+            let persistent_gpu_on = crate::config::read(crate::config::LAB_IOSURFACE_PERSISTENT_GPU).0 == crate::config::Switch::On
+                || crate::config::read(crate::config::LAB_IOSURFACE_SUBRECT_VIEWS).0 == crate::config::Switch::On;
+            if persistent_gpu_on {
+                let resident_identity = if let Some(c) = req.colors.iter().find(|c| c.slot == index) {
+                    let format = translate::pixel::color_attachment(c.format).ok().map(|r| r.0.vk);
+                    if let Some(fmt) = format {
+                        if let Some(state) = acc.exclusive() {
+                            secondary_attachment_identity(state, host, req.task_id, c, fmt)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some(identity) = resident_identity {
+                    let tw = identity.width();
+                    let th = identity.height();
+                    images.push(crate::backend::vulkan::engine::SampledImageResource {
+                        binding: img_bind,
+                        array_element: 0,
+                        descriptor_count: 1,
+                        width: tw,
+                        height: th,
+                        layers: 1,
+                        kind: shape.kind,
+                        multisampled: false,
+                        source: crate::backend::vulkan::engine::SampledSource::Target(identity),
+                        byte_origin: crate::backend::vulkan::engine::SampledByteOrigin::AttachmentAlias,
+                        format: translate::pixel::vk_sampled_bytes(SampledByteFormat::synthesised(TexelLayout::Rgba8)),
+                        identity: None,
+                        swizzle: Default::default(),
+                    });
+                    crate::runtime::drain::note_store_route("draw_binding_second_texture_resident_resolved");
+                    continue;
+                }
+            }
             // A repair that succeeded, not a success: the shader samples a
             // texture whose contents this device invented, so it stays on the
             // fail channel and the reliance stays measurable.
             crate::runtime::drain::note_store_route("draw_binding_placeholder_frag_neutral");
+            if index == 1 {
+                crate::runtime::drain::note_store_route("draw_binding_placeholder_slot_1");
+            } else if index == 2 {
+                crate::runtime::drain::note_store_route("draw_binding_placeholder_slot_2");
+            }
             crate::observe::fail(format!(
                 "shader_resource_declared_unbound \
                  reason=frag_neutral_texture_substituted \
