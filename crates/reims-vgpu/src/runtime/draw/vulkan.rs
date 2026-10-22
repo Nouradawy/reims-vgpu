@@ -4947,7 +4947,7 @@ pub(super) fn resolve_sampled_source<M: HostMemory + HostOps>(
         };
         extent
     };
-    let planes = level.planes();
+    let planes = if view.is_some() { 1 } else { level.planes() };
     let need = (w as usize)
         .saturating_mul(h as usize)
         .saturating_mul(planes as usize)

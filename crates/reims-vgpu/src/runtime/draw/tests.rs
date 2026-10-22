@@ -9776,3 +9776,148 @@ fn r8_unorm_target_preserves_alpha_in_red_swizzle_when_declared_as_a8() {
     assert_eq!(composed, plan);
 }
 
+#[cfg(feature = "backend-vulkan")]
+fn array_slice_view_of_a_linear_texture(
+    state: &mut DeviceState,
+    host: &mut FakeHost,
+    slice: u64,
+) -> (u32, Vec<u8>) {
+    use crate::protocol::endian::{st16, st32, st64};
+    use crate::runtime::decode::resource::*;
+    use crate::protocol::pixel_format::MTL_FORMAT_RGBA8_UNORM;
+
+    let bpp = 4u32;
+    let (w, h, depth) = (64u32, 32u32, 3u32);
+    let slice_bytes = (w * h * bpp) as usize;
+    let alloc_bytes = slice_bytes * depth as usize;
+    let (handle, alloc_gva) = (2u32, 2u64 << PAGE_SHIFT_ARM64E);
+
+    gva_mem::define_task_pages_arm64e(host, state, 4, 16);
+    assert!(state.set_object_list(1, 0, 32));
+
+    let base_ref = 5u32;
+    let body = TEXTURE_DESC_BASE_LEN;
+    let mut b = vec![0u8; body];
+    st64(&mut b[0..], alloc_bytes as u64); // allocation_size
+    st32(&mut b[8..], handle);
+    st16(&mut b[TEXTURE_DESC_MIPMAP_LEVEL_COUNT..], 1);
+    st32(&mut b[TEXTURE_DESC_USED_SIZE..], alloc_bytes as u32);
+    st32(&mut b[TEXTURE_DESC_ROW_STRIDE..], w * bpp);
+    st32(&mut b[TEXTURE_DESC_WIDTH..], w);
+    st32(&mut b[TEXTURE_DESC_HEIGHT..], h);
+    st32(&mut b[TEXTURE_DESC_DEPTH..], depth);
+    st16(&mut b[TEXTURE_DESC_PIXEL_FORMAT..], MTL_FORMAT_RGBA8_UNORM);
+
+    let base_desc_gva = 0x200u64;
+    write_task_gva_arm64e(host, &state.tasks[1], base_desc_gva, &b);
+    let off = list_object_entry_offset(base_ref, 32).unwrap();
+    let mut le = [0u8; OBJECT_LIST_ENTRY_LEN];
+    st32(
+        &mut le[0..],
+        (OBJECT_TYPE_TEXTURE as u32) | ((body as u32) << 8),
+    );
+    le[4..12].copy_from_slice(&base_desc_gva.to_le_bytes());
+    write_task_gva_arm64e(host, &state.tasks[1], off, &le);
+
+    let view_ref = 8u32;
+    let len = TEXTURE_VIEW_MIN_RANGED;
+    let mut desc = vec![0u8; len];
+    st32(
+        &mut desc[TEXTURE_VIEW_DESC_OPCODE..],
+        TEXTURE_VIEW_OPCODE_RANGED,
+    );
+    st32(&mut desc[TEXTURE_VIEW_DESC_LEN..], len as u32);
+    st32(&mut desc[TEXTURE_VIEW_DESC_TEXTURE_REF..], view_ref);
+    st32(&mut desc[TEXTURE_VIEW_DESC_BASE_REF..], base_ref);
+    st16(&mut desc[TEXTURE_VIEW_DESC_PIXEL_FORMAT..], MTL_FORMAT_RGBA8_UNORM);
+    st16(
+        &mut desc[TEXTURE_VIEW_DESC_TEXTURE_TYPE..],
+        TEXTURE_VIEW_MTL_TYPE_2D,
+    );
+    st64(&mut desc[TEXTURE_VIEW_DESC_LEVEL_BASE..], 0);
+    st64(&mut desc[TEXTURE_VIEW_DESC_LEVEL_COUNT..], 1);
+    st64(&mut desc[TEXTURE_VIEW_DESC_SLICE_BASE..], slice);
+    st64(&mut desc[TEXTURE_VIEW_DESC_SLICE_COUNT..], 1);
+
+    let desc_gva = 0x400u64;
+    write_task_gva_arm64e(host, &state.tasks[1], desc_gva, &desc);
+    let off = list_object_entry_offset(view_ref, 32).unwrap();
+    let mut le = [0u8; OBJECT_LIST_ENTRY_LEN];
+    st32(
+        &mut le[0..],
+        (OBJECT_TYPE_TEXTURE_VIEW as u32) | ((len as u32) << 8),
+    );
+    le[4..12].copy_from_slice(&desc_gva.to_le_bytes());
+    write_task_gva_arm64e(host, &state.tasks[1], off, &le);
+
+    let s0 = vec![0x11u8; slice_bytes];
+    let s1 = vec![0x22u8; slice_bytes];
+    let s2 = vec![0x33u8; slice_bytes];
+    write_task_gva_arm64e(host, &state.tasks[1], alloc_gva, &s0);
+    write_task_gva_arm64e(host, &state.tasks[1], alloc_gva + slice_bytes as u64, &s1);
+    write_task_gva_arm64e(host, &state.tasks[1], alloc_gva + (2 * slice_bytes) as u64, &s2);
+
+    let expected = match slice {
+        0 => s0,
+        1 => s1,
+        2 => s2,
+        _ => unreachable!(),
+    };
+    (view_ref, expected)
+}
+
+#[cfg(feature = "backend-vulkan")]
+#[test]
+fn texture_view_array_slice_64x32x3_s0() {
+    let mut state = DeviceState::new(DeviceId(1), PAGE_SHIFT_ARM64E);
+    let mut host = FakeHost::new();
+    let (view_ref, expected) = array_slice_view_of_a_linear_texture(&mut state, &mut host, 0);
+
+    let (w, h, mid, src) = resolve_sampled_source(&mut state, &mut host, 1, view_ref, None, false)
+        .expect("array slice view 0 must sample");
+    assert_eq!((w, h), (64, 32));
+    assert_eq!(mid, 0);
+    let SampledSourceRequest::Bytes(bytes, _, _, _) = src else {
+        panic!("linear texture array slice serves bytes");
+    };
+    assert_eq!(bytes.len(), 64 * 32 * 4);
+    assert_eq!(bytes.as_slice(), expected.as_slice());
+}
+
+#[cfg(feature = "backend-vulkan")]
+#[test]
+fn texture_view_array_slice_64x32x3_s1() {
+    let mut state = DeviceState::new(DeviceId(1), PAGE_SHIFT_ARM64E);
+    let mut host = FakeHost::new();
+    let (view_ref, expected) = array_slice_view_of_a_linear_texture(&mut state, &mut host, 1);
+
+    let (w, h, mid, src) = resolve_sampled_source(&mut state, &mut host, 1, view_ref, None, false)
+        .expect("array slice view 1 must sample");
+    assert_eq!((w, h), (64, 32));
+    assert_eq!(mid, 0);
+    let SampledSourceRequest::Bytes(bytes, _, _, _) = src else {
+        panic!("linear texture array slice serves bytes");
+    };
+    assert_eq!(bytes.len(), 64 * 32 * 4);
+    assert_eq!(bytes.as_slice(), expected.as_slice());
+}
+
+#[cfg(feature = "backend-vulkan")]
+#[test]
+fn texture_view_array_slice_64x32x3_s2() {
+    let mut state = DeviceState::new(DeviceId(1), PAGE_SHIFT_ARM64E);
+    let mut host = FakeHost::new();
+    let (view_ref, expected) = array_slice_view_of_a_linear_texture(&mut state, &mut host, 2);
+
+    let (w, h, mid, src) = resolve_sampled_source(&mut state, &mut host, 1, view_ref, None, false)
+        .expect("array slice view 2 must sample");
+    assert_eq!((w, h), (64, 32));
+    assert_eq!(mid, 0);
+    let SampledSourceRequest::Bytes(bytes, _, _, _) = src else {
+        panic!("linear texture array slice serves bytes");
+    };
+    assert_eq!(bytes.len(), 64 * 32 * 4);
+    assert_eq!(bytes.as_slice(), expected.as_slice());
+}
+
+

@@ -4786,9 +4786,9 @@ fn load_sampled_rgba_static<M: HostMemory + HostOps>(
     // to do, silently) dropped the texture from the draw entirely.
     let (tex_ref, level, slice, fmt_override) =
         if let Some(view) = resolve_texture_view(state, host, task_id, texture_ref) {
-            (view.base_texture_ref, view.level, view.slice, view.pixel_format)
+            (view.base_texture_ref, view.level, Some(view.slice), view.pixel_format)
         } else {
-            (texture_ref, 0, 0, None)
+            (texture_ref, 0, None, None)
         };
     // TEMP (lab): name the base a failing view reads, once per (base, override).
     let lab_view_miss = |state: &mut DeviceState, host: &M, path: &str| {

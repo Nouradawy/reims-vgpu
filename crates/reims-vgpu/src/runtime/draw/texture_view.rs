@@ -710,7 +710,7 @@ pub(crate) fn load_linear_texture_host<M: HostMemory + HostOps>(
     task_id: u32,
     texture_ref: u32,
     level: u32,
-    slice: u32,
+    slice: Option<u32>,
     format_override: Option<u16>,
     native: NativeUploads,
     site: crate::runtime::render_writeback::SettleSite,
@@ -763,7 +763,7 @@ pub(crate) fn load_cube_faces<M: HostMemory + HostOps>(
     // before the loop, which is what lets the six faces pack with one
     // allocation and leaves no "no face was read" case to invent a refusal for.
     let (first_bytes, format) =
-        load_linear_texture_impl(state, host, task_id, texture_ref, 0, 0, None, native, site)?;
+        load_linear_texture_impl(state, host, task_id, texture_ref, 0, Some(0), None, native, site)?;
     let mut packed: Vec<u8> = Vec::with_capacity(first_bytes.len() * CUBE_FACES as usize);
     packed.extend_from_slice(&first_bytes);
     drop(first_bytes);
@@ -774,7 +774,7 @@ pub(crate) fn load_cube_faces<M: HostMemory + HostOps>(
             task_id,
             texture_ref,
             0,
-            face,
+            Some(face),
             None,
             native,
             site,
@@ -985,9 +985,9 @@ fn plan_linear_texture_read<M: HostMemory + HostOps>(
     // Array slice / cube face to read. Slices pack as contiguous images at each
     // mip — the rule `blit_exec`'s array copies measured against live guest
     // traffic (opcode 0x12c, slices 1 and 2 at exact one-image offsets) — so a
-    // face is the level's own read one face-stride further in. 0 is every
-    // pre-existing caller, and everything below is unchanged for it.
-    face: u32,
+    // face is the level's own read one face-stride further in. `Some(s)` selects
+    // a single slice (planes = 1), while `None` reads all planes from base (unviewed 2D/3D).
+    slice: Option<u32>,
     format_override: Option<u16>,
     site: crate::runtime::render_writeback::SettleSite,
 ) -> Result<LinearTextureRead, LinearLoadRefusal> {
@@ -1020,7 +1020,7 @@ fn plan_linear_texture_read<M: HostMemory + HostOps>(
         .ok_or(R::NoLevelGva { level })?;
     let w = layout.width;
     let h = layout.height;
-    let planes = layout.planes();
+    let planes = if slice.is_some() { 1 } else { layout.planes() };
     let bpr = layout.row_stride;
     if bpr > u32::MAX as u64 {
         return Err(R::SizeOverflow);
@@ -1054,19 +1054,24 @@ fn plan_linear_texture_read<M: HostMemory + HostOps>(
     // One face-stride per slice past the level base. The stride is a whole
     // image *including* its final row's padding — the packing rule is
     // contiguous images, so face N+1 starts where face N's allocation ends,
-    // not where its last read ends. Zero for face 0, which is every 2D caller.
-    let face_off = if face == 0 {
-        0
-    } else {
-        bpr.checked_mul(u64::from(storage_rows))
-            .and_then(|stride| stride.checked_mul(u64::from(planes)))
-            .and_then(|stride| stride.checked_mul(u64::from(face)))
-            .ok_or(R::SizeOverflow)?
+    // not where its last read ends. Zero for slice 0 / None, which is every 2D caller.
+    let face_off = match slice {
+        None | Some(0) => 0,
+        Some(s) => bpr
+            .checked_mul(u64::from(storage_rows))
+            .and_then(|stride| stride.checked_mul(u64::from(s)))
+            .ok_or(R::SizeOverflow)?,
     };
     let gva = gva.checked_add(face_off).ok_or(R::SizeOverflow)?;
-    let span = layout
-        .slice_read_span_rows(storage_rows, tight)
-        .ok_or(R::SizeOverflow)?;
+    let span = if slice.is_some() {
+        layout
+            .read_span_rows(storage_rows, tight)
+            .ok_or(R::SizeOverflow)?
+    } else {
+        layout
+            .slice_read_span_rows(storage_rows, tight)
+            .ok_or(R::SizeOverflow)?
+    };
     let end = layout.offset.saturating_add(face_off).saturating_add(span);
     if tex.allocation_size != 0 && end > tex.allocation_size {
         return Err(R::SpanExceedsAllocation {
@@ -1146,7 +1151,7 @@ pub(crate) fn linear_texture_is_zero<M: HostMemory + HostOps>(
         static BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
     }
     let plan =
-        plan_linear_texture_read(state, host, task_id, texture_ref, 0, 0, None, site).ok()?;
+        plan_linear_texture_read(state, host, task_id, texture_ref, 0, None, None, site).ok()?;
     if plan.w != width || plan.h != height || plan.planes != 1 {
         return None;
     }
@@ -1208,7 +1213,7 @@ fn load_linear_texture_impl<M: HostMemory + HostOps>(
     texture_ref: u32,
     level: u32,
     // Array slice / cube face to read; see `plan_linear_texture_read`.
-    face: u32,
+    slice: Option<u32>,
     format_override: Option<u16>,
     native: NativeUploads,
     site: crate::runtime::render_writeback::SettleSite,
@@ -1230,7 +1235,7 @@ fn load_linear_texture_impl<M: HostMemory + HostOps>(
         task_id,
         texture_ref,
         level,
-        face,
+        slice,
         format_override,
         site,
     )?;
