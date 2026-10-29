@@ -565,7 +565,11 @@ pub fn vulkan_t2t_pending() -> bool {
 /// `only` (or to every mapping). Free when none is owed: one atomic load.
 #[inline]
 #[track_caller]
-pub fn land_t2t<M: crate::runtime::host::HostMemory + crate::runtime::host::HostOps>(state: &mut DeviceState, host: &mut M, only: Option<u32>) {
+pub fn land_t2t<M: crate::runtime::host::HostMemory + crate::runtime::host::HostOps>(
+    state: &mut DeviceState,
+    host: &mut M,
+    only: Option<u32>,
+) {
     #[cfg(feature = "backend-vulkan")]
     if vulkan::T2T_PENDING_N.load(std::sync::atomic::Ordering::Acquire) != 0 {
         vulkan::land_t2t(state, host, only);
@@ -578,7 +582,9 @@ pub fn land_t2t<M: crate::runtime::host::HostMemory + crate::runtime::host::Host
 /// frame is parked: one atomic load.
 #[inline]
 #[track_caller]
-pub fn t2t_park_before_gather<M: crate::runtime::host::HostMemory + crate::runtime::host::HostOps>(
+pub fn t2t_park_before_gather<
+    M: crate::runtime::host::HostMemory + crate::runtime::host::HostOps,
+>(
     state: &mut DeviceState,
     host: &mut M,
     gpas: &[u64],
@@ -586,7 +592,8 @@ pub fn t2t_park_before_gather<M: crate::runtime::host::HostMemory + crate::runti
     servable: bool,
 ) -> bool {
     #[cfg(feature = "backend-vulkan")]
-    return vulkan::t2t_park::any() && vulkan::t2t_park_before_gather(state, host, gpas, span, servable);
+    return vulkan::t2t_park::any()
+        && vulkan::t2t_park_before_gather(state, host, gpas, span, servable);
     #[cfg(not(feature = "backend-vulkan"))]
     {
         let _ = (state, host, gpas, span, servable);
@@ -596,7 +603,13 @@ pub fn t2t_park_before_gather<M: crate::runtime::host::HostMemory + crate::runti
 
 /// TEMP (lab, T2T_PARK): see `vulkan::t2t_park_bind`.
 #[inline]
-pub fn t2t_park_bind(gpas: &[u64], span: u64, seen_generation: u64, vouched: bool, fresh: u64) -> Option<u64> {
+pub fn t2t_park_bind(
+    gpas: &[u64],
+    span: u64,
+    seen_generation: u64,
+    vouched: bool,
+    fresh: u64,
+) -> Option<u64> {
     #[cfg(feature = "backend-vulkan")]
     return vulkan::t2t_park_bind(gpas, span, seen_generation, vouched, fresh);
     #[cfg(not(feature = "backend-vulkan"))]
@@ -653,7 +666,9 @@ pub fn land_t2t_unparked<M: crate::runtime::host::HostMemory + crate::runtime::h
 /// another mapping.
 #[inline]
 #[track_caller]
-pub fn land_t2t_over_mapping<M: crate::runtime::host::HostMemory + crate::runtime::host::HostOps>(
+pub fn land_t2t_over_mapping<
+    M: crate::runtime::host::HostMemory + crate::runtime::host::HostOps,
+>(
     state: &mut DeviceState,
     host: &mut M,
     mapping_id: u32,
@@ -669,7 +684,9 @@ pub fn land_t2t_over_mapping<M: crate::runtime::host::HostMemory + crate::runtim
 /// TEMP (lab, T2T_PARK): every owed frame but the parked ones.
 #[inline]
 #[track_caller]
-pub fn land_t2t_unparked_all<M: crate::runtime::host::HostMemory + crate::runtime::host::HostOps>(
+pub fn land_t2t_unparked_all<
+    M: crate::runtime::host::HostMemory + crate::runtime::host::HostOps,
+>(
     state: &mut DeviceState,
     host: &mut M,
 ) {

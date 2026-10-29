@@ -729,11 +729,12 @@ fn commit_buffer_plan(
     extent_cap: Option<u64>,
     apply: bool,
 ) -> Result<Option<crate::backend::vulkan::engine::BufferContent>, BufferInvalid> {
-    let (content, hold) =
-        match plan_answer(state, plan, task_id, buffer_ref, resource, offset, extent_cap, apply)? {
-            Some(answer) => answer,
-            None => return Ok(None),
-        };
+    let (content, hold) = match plan_answer(
+        state, plan, task_id, buffer_ref, resource, offset, extent_cap, apply,
+    )? {
+        Some(answer) => answer,
+        None => return Ok(None),
+    };
     if apply {
         if let Some(hold) = hold {
             hold.land(state);
@@ -755,8 +756,10 @@ pub(super) fn predict_buffer_plan(
     offset: u64,
     extent_cap: Option<u64>,
 ) -> Result<Option<crate::backend::vulkan::engine::BufferContent>, BufferInvalid> {
-    Ok(plan_answer(state, plan, task_id, buffer_ref, resource, offset, extent_cap, false)?
-        .map(|(content, _)| content))
+    Ok(plan_answer(
+        state, plan, task_id, buffer_ref, resource, offset, extent_cap, false,
+    )?
+    .map(|(content, _)| content))
 }
 
 /// TEMP (lab, DRAW_PAR): the drain's commit of a plan a worker served a
@@ -772,7 +775,9 @@ pub(super) fn commit_prepared_buffer(
     offset: u64,
     extent_cap: Option<u64>,
 ) -> Result<Option<crate::backend::vulkan::engine::BufferContent>, BufferInvalid> {
-    commit_buffer_plan(state, plan, task_id, buffer_ref, resource, offset, extent_cap, true)
+    commit_buffer_plan(
+        state, plan, task_id, buffer_ref, resource, offset, extent_cap, true,
+    )
 }
 
 /// TEMP (lab, DRAW_PAR): the commit of a plan whose registry generation is
@@ -828,9 +833,13 @@ impl OwedHold {
             .get(self.task, self.buffer_ref, self.offset, self.cap)
             .is_none()
         {
-            state
-                .bound_buffers
-                .insert(self.task, self.buffer_ref, self.offset, self.cap, self.bound);
+            state.bound_buffers.insert(
+                self.task,
+                self.buffer_ref,
+                self.offset,
+                self.cap,
+                self.bound,
+            );
         }
     }
 }
@@ -866,7 +875,9 @@ pub(super) fn commit_prepared_buffer_shared(
         }
         return Ok(None);
     }
-    match plan_answer(state, plan, task_id, buffer_ref, resource, offset, extent_cap, true) {
+    match plan_answer(
+        state, plan, task_id, buffer_ref, resource, offset, extent_cap, true,
+    ) {
         Ok(Some((_, hold))) => Ok(hold.map(|h| OwedHold {
             task: h.task,
             buffer_ref: h.buffer_ref,

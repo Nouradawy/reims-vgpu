@@ -121,7 +121,10 @@ static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 /// synchronized TSCs are what both lab hosts have; off x86_64, in tests, or
 /// with the switch `=off`, nothing changes.
 mod fast_clock {
-    use std::sync::atomic::{AtomicU64, AtomicU8, Ordering::{Acquire, Relaxed, Release}};
+    use std::sync::atomic::{
+        AtomicU64, AtomicU8,
+        Ordering::{Acquire, Relaxed, Release},
+    };
 
     /// 0 undecided, 1 off, 2 calibrating, 3 on, 4 one thread finishing the calibration.
     static STATE: AtomicU8 = AtomicU8::new(0);

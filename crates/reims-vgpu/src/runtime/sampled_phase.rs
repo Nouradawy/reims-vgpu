@@ -121,8 +121,8 @@
 //! to that span, because the commit is in `Drop` — deliberate, for the reason
 //! `chain_phase` states: an exit is not a phase.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use crate::lab_clock::LabInstant as Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::observe::phase_clock::{charge_ns, to_us};
 

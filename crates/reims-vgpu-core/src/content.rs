@@ -27,8 +27,8 @@
 
 use crate::access::{BackingId, ByteRange, ContentVersion};
 use crate::coverage::{Applied, Span, VersionCoverage};
-use crate::range_set::RangeSet;
 use crate::fasthash::FxHashMap;
+use crate::range_set::RangeSet;
 use std::collections::HashMap;
 
 /// Where a copy of a backing's content lives.

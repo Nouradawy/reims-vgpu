@@ -1690,6 +1690,12 @@ pub const LAB_DIRTY_NARROW: &str = "REIMS_VGPU_LAB_DIRTY_NARROW";
 /// **Default off (lab).** Phase 5.1 relaxed sampled-size check and persistent subrect view aliases.
 pub const LAB_IOSURFACE_SUBRECT_VIEWS: &str = "REIMS_VGPU_LAB_IOSURFACE_SUBRECT_VIEWS";
 
+/// **Default off (lab).** Refuse to sample a resident whose allocation restates RGBA8 as a 2-channel 16-bit texel (blue-channel loss).
+pub const LAB_SNAPSHOT_KEEP_RESIDENT_LAYOUT: &str = "REIMS_VGPU_LAB_SNAPSHOT_KEEP_RESIDENT_LAYOUT";
+
+/// **Default off (lab).** Refuse a sampled bind whose guest descriptor format disagrees in channel count with the resident it resolved to (always logged).
+pub const LAB_BIND_FORMAT_GUARD: &str = "REIMS_VGPU_LAB_BIND_FORMAT_GUARD";
+
 /// **Default off (lab).** Phase 5.3 extended format table, ASTC/ETC2 decoding, and XR unpackers.
 pub const LAB_FORMATS_EXT: &str = "REIMS_VGPU_LAB_FORMATS_EXT";
 
@@ -1720,9 +1726,17 @@ pub const LOAD_SEED_RESCUE: &str = "REIMS_VGPU_LOAD_SEED_RESCUE";
 /// **Default on (v14 C2).** An sRGB/UNORM resolve pair (0x51/0x50, 0x47/0x46)
 /// is admitted instead of dropping the draw as render_resolve_target_mismatch.
 pub const MSAA_SRGB_RESOLVE: &str = "REIMS_VGPU_MSAA_SRGB_RESOLVE";
+
+/// **Default off (lab).** Phase 6 IOSurface VRAM budget accounting and LRU eviction.
+pub const LAB_IOSURFACE_BUDGET: &str = "REIMS_VGPU_LAB_IOSURFACE_BUDGET";
 }
 
 counts! {
+
+/// **A count, not a switch.** Phase 6 IOSurface VRAM budget limit in megabytes.
+/// Narrowing of the compiled default cap (1536 MiB / 1.5 GiB). Overrides above
+/// 1536 are refused rather than obeyed.
+pub const LAB_IOSURFACE_VRAM_BUDGET_MB: &str = "REIMS_VGPU_LAB_IOSURFACE_VRAM_BUDGET_MB";
 
 /// An optional lower limit for the persisted pipeline cache in whole MiB.
 pub const PIPELINE_CACHE_MAX_MB: &str = "REIMS_VGPU_PIPELINE_CACHE_MAX_MB";
@@ -2307,5 +2321,36 @@ mod tests {
         let line = report_line();
         unsafe { std::env::remove_var(GUEST_IMPORT_READS) };
         assert!(line.contains("guest_import_reads=off"), "{line}");
+    }
+
+    /// LAB_IOSURFACE_BUDGET switch and LAB_IOSURFACE_VRAM_BUDGET_MB count narrowing tests.
+    #[test]
+    fn iosurface_budget_switches_and_narrowing() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Default unset
+        assert_eq!(switch(LAB_IOSURFACE_BUDGET), Switch::Unset);
+        assert_eq!(count(LAB_IOSURFACE_VRAM_BUDGET_MB, 1536), Count::Unset);
+
+        // Turn switch on
+        unsafe { std::env::set_var(LAB_IOSURFACE_BUDGET, "1") };
+        assert_eq!(switch(LAB_IOSURFACE_BUDGET), Switch::On);
+        unsafe { std::env::remove_var(LAB_IOSURFACE_BUDGET) };
+
+        // Narrow budget cap to 512 MB (less than ceiling 1536)
+        unsafe { std::env::set_var(LAB_IOSURFACE_VRAM_BUDGET_MB, "512") };
+        assert_eq!(
+            count(LAB_IOSURFACE_VRAM_BUDGET_MB, 1536),
+            Count::Narrowed(512)
+        );
+        unsafe { std::env::remove_var(LAB_IOSURFACE_VRAM_BUDGET_MB) };
+
+        // Widening above ceiling is refused
+        unsafe { std::env::set_var(LAB_IOSURFACE_VRAM_BUDGET_MB, "4096") };
+        assert_eq!(
+            count(LAB_IOSURFACE_VRAM_BUDGET_MB, 1536),
+            Count::Refused("4096".to_string())
+        );
+        unsafe { std::env::remove_var(LAB_IOSURFACE_VRAM_BUDGET_MB) };
     }
 }

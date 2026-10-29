@@ -25,6 +25,8 @@ use super::types::{
 };
 use super::vk_call::{VkCall, VkOp};
 
+mod secondary_seed;
+
 /// A buffer a draw binds, and where in it the bytes start.
 ///
 /// Two origins, and the offset is what distinguishes them. A pooled staging slot
@@ -654,7 +656,8 @@ struct StageBufferUse {
 
 /// TEMP (lab, DRAW_PAR v15): set once the recorder has met a guest-runs bind
 /// on a host without host-pointer import (the CPU-gather rail).
-static HOST_GATHERS_ON_CPU: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static HOST_GATHERS_ON_CPU: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// TEMP (lab, DRAW_PAR v15): see [`HOST_GATHERS_ON_CPU`].
 pub(crate) fn host_gathers_on_cpu() -> bool {
@@ -1192,7 +1195,8 @@ fn t2t_park_texels(
         return None;
     }
     if let Some(slot) = pools.registry_get(&served.source) {
-        let current = super::pools::readiness::lookup(&served.source).map(|r| r.version) == served.version
+        let current = super::pools::readiness::lookup(&served.source).map(|r| r.version)
+            == served.version
             && served.version.is_some()
             && slot.content_ready;
         let bgra = matches!(
@@ -1214,13 +1218,14 @@ fn t2t_park_texels(
             });
         }
     }
-    if served.readback.device != vk::Handle::as_raw(ctx.device.handle()) {
+    if served.readback.device != ctx.generation {
         crate::runtime::drain::note_store_route("t2t_park_serve_device_gone");
         return None;
     }
     pools.note_parked_read(std::sync::Arc::clone(&served.readback.hold));
     crate::runtime::drain::note_store_route("t2t_park_served_readback");
-    crate::runtime::render_writeback::vulkan::t2t_park::SERVED_RB_N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    crate::runtime::render_writeback::vulkan::t2t_park::SERVED_RB_N
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Some(GuestTexels::Parked(served.readback.buffer))
 }
 
@@ -1240,12 +1245,16 @@ fn t2t_alias_texels(
     let (rid, version) = super::t2t_alias_source(alias)?;
     let Some(slot) = pools.registry_get(&rid) else {
         crate::runtime::drain::note_store_route("t2t_alias_gone");
-        crate::runtime::gather_witness::t2t_alias::DECLINED_N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::runtime::gather_witness::t2t_alias::DECLINED_N
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return None;
     };
-    if super::pools::readiness::lookup(&rid).map(|r| r.version) != Some(version) || !slot.content_ready {
+    if super::pools::readiness::lookup(&rid).map(|r| r.version) != Some(version)
+        || !slot.content_ready
+    {
         crate::runtime::drain::note_store_route("t2t_alias_stale");
-        crate::runtime::gather_witness::t2t_alias::DECLINED_N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::runtime::gather_witness::t2t_alias::DECLINED_N
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return None;
     }
     let bgra = matches!(
@@ -1274,7 +1283,8 @@ fn t2t_alias_texels(
         || src.total_len != tight
     {
         crate::runtime::drain::note_store_route("t2t_alias_shape");
-        crate::runtime::gather_witness::t2t_alias::DECLINED_N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::runtime::gather_witness::t2t_alias::DECLINED_N
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return None;
     }
     Some(GuestTexels::Resident {
@@ -1439,6 +1449,9 @@ enum PreparedSampled {
         staging: BufferSlot,
         volume: bool,
         layers: u32,
+        mip_copies: Option<Vec<vk::BufferImageCopy>>,
+        bytes: std::sync::Arc<Vec<u8>>,
+        identity: Option<super::types::SampledContentIdentity>,
     },
     /// Guest source: one buffer→image copy fills the sampled image out of the
     /// guest's own texel bytes. [`GuestTexels`] says how far those bytes had to
@@ -1601,6 +1614,24 @@ fn feedback_color_index(
     req.color_attachment_index(identity)
 }
 
+/// The scratch copy used for an attachment feedback or a swizzled resident
+/// binds must carry the same **sample interpretation** as the resident view.
+///
+/// A sampled resource records only a `TexelLayout`, which cannot say sRGB. A
+/// resident can: direct binds resolve that extra information through
+/// `registry_sample_format`. Keeping it in this key makes the copied view apply
+/// the same decode, instead of compositing an already sRGB-encoded value as
+/// linear and encoding it again in the next target.
+fn resident_snapshot_key(
+    resource: &super::types::SampledImageResource,
+    sample_format: vk::Format,
+) -> SampledKey {
+    SampledKey {
+        format: sample_format,
+        ..SampledKey::of(resource)
+    }
+}
+
 /// Whether a preserving pass that did not ask to load from its resident still
 /// starts from it: the resident is ready, the guest's load action keeps prior
 /// contents, and the request brought no seed of its own.
@@ -1615,9 +1646,7 @@ fn preserve_from_ready_resident(
     resident_ready: bool,
     explicit_seed: bool,
 ) -> bool {
-    let persistent_gpu_on =
-        crate::config::read(crate::config::LAB_IOSURFACE_PERSISTENT_GPU).0 == crate::config::Switch::On;
-    (!explicit_seed || persistent_gpu_on)
+    !explicit_seed
         && resident_ready
         && declared.is_some_and(|declared| declared.preserves_prior_contents())
 }
@@ -1830,6 +1859,89 @@ fn validate_buffer_content(
     Ok(())
 }
 
+fn validate_color_guest_seed(
+    seed: &super::types::GuestTargetSeed,
+    width: u32,
+    height: u32,
+    target_format: vk::Format,
+) -> Result<(), DrawError> {
+    if !super::super::translate::pixel::stored_bytes_agree(seed.format, target_format) {
+        return Err(DrawError::DrawValidation(
+            DrawValidationDecline::TargetGuestSeedFormat {
+                source: seed.format,
+                target: target_format,
+            },
+        ));
+    }
+    let Some(texel) = super::super::translate::pixel::bytes_per_texel(seed.format) else {
+        return Err(DrawError::DrawValidation(
+            DrawValidationDecline::TargetGuestSeedFormat {
+                source: seed.format,
+                target: target_format,
+            },
+        ));
+    };
+    let tight_row =
+        (width as usize)
+            .checked_mul(texel as usize)
+            .ok_or(DrawError::DrawValidation(
+                DrawValidationDecline::UnrepresentableImageBytes {
+                    width,
+                    height,
+                    layers: 1,
+                    bytes_per_texel: texel,
+                },
+            ))?;
+    let stride = if seed.source.row_length_texels == 0 {
+        tight_row
+    } else {
+        (seed.source.row_length_texels as usize)
+            .checked_mul(texel as usize)
+            .ok_or(DrawError::DrawValidation(
+                DrawValidationDecline::UnrepresentableImageBytes {
+                    width,
+                    height,
+                    layers: 1,
+                    bytes_per_texel: texel,
+                },
+            ))?
+    };
+    if stride < tight_row {
+        return Err(DrawError::DrawValidation(
+            DrawValidationDecline::TargetGuestSeedRowStride { stride, tight_row },
+        ));
+    }
+    let expected = (height.saturating_sub(1) as usize)
+        .checked_mul(stride)
+        .and_then(|prefix| prefix.checked_add(tight_row))
+        .ok_or(DrawError::DrawValidation(
+            DrawValidationDecline::UnrepresentableImageBytes {
+                width,
+                height,
+                layers: 1,
+                bytes_per_texel: texel,
+            },
+        ))?;
+    if seed.source.total_len != expected as u64 {
+        return Err(DrawError::DrawValidation(
+            DrawValidationDecline::TargetGuestSeedLength {
+                actual: seed.source.total_len,
+                expected,
+            },
+        ));
+    }
+    let covered = seed.source.runs.iter().map(|run| run.len()).sum();
+    if covered != seed.source.total_len {
+        return Err(DrawError::DrawValidation(
+            DrawValidationDecline::TargetGuestSeedCoverage {
+                covered,
+                declared: seed.source.total_len,
+            },
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_v1(req: &DrawRequest) -> Result<(), DrawError> {
     if req.width == 0 || req.height == 0 {
         return Err(DrawError::DrawValidation(
@@ -1849,8 +1961,7 @@ pub(crate) fn validate_v1(req: &DrawRequest) -> Result<(), DrawError> {
     // for Skia Graphite path rendering, SF Symbols, or clipping).
     // In Metal, such passes can be executed within a render pass that designates color
     // attachments (with `ColorWriteMask::NONE`), or writes purely to depth/stencil.
-    let allows_empty_frag = req.depth.is_some()
-        || req.color_write_mask == ColorWriteMask::NONE;
+    let allows_empty_frag = req.depth.is_some() || req.color_write_mask == ColorWriteMask::NONE;
     if req.frag_spirv.is_empty() && !allows_empty_frag {
         return Err(DrawError::DrawValidation(
             DrawValidationDecline::EmptyFragmentSpirv,
@@ -1907,13 +2018,9 @@ pub(crate) fn validate_v1(req: &DrawRequest) -> Result<(), DrawError> {
                 },
             ));
         };
-        let native_bpp = req
-            .target_identity
-            .as_ref()
-            .map(|identity| identity.resident_format())
-            .or_else(|| req.color_attachment.map(|c| c.format()))
-            .and_then(super::super::translate::pixel::bytes_per_texel)
-            .unwrap_or(crate::protocol::pixel_format::RGBA8_BPP);
+        let native_bpp =
+            super::super::translate::pixel::bytes_per_texel(req.primary_color_format())
+                .unwrap_or(crate::protocol::pixel_format::RGBA8_BPP);
         let expected_native = reims_vgpu_protocol::extent::tight_image_bytes(
             req.width,
             req.height,
@@ -1929,89 +2036,21 @@ pub(crate) fn validate_v1(req: &DrawRequest) -> Result<(), DrawError> {
         }
     }
     if let Some(seed) = &req.target_guest_seed {
-        let target_format = req
-            .target_identity
-            .as_ref()
-            .map(|identity| identity.resident_format())
-            .unwrap_or(super::super::translate::pixel::RESIDENT_RGBA_FORMAT);
-        if seed.format != target_format {
-            return Err(DrawError::DrawValidation(
-                DrawValidationDecline::TargetGuestSeedFormat {
-                    source: seed.format,
-                    target: target_format,
-                },
-            ));
-        }
-        let Some(texel) = super::super::translate::pixel::bytes_per_texel(seed.format) else {
-            return Err(DrawError::DrawValidation(
-                DrawValidationDecline::TargetGuestSeedFormat {
-                    source: seed.format,
-                    target: target_format,
-                },
-            ));
-        };
-        let tight_row =
-            (req.width as usize)
-                .checked_mul(texel as usize)
-                .ok_or(DrawError::DrawValidation(
-                    DrawValidationDecline::UnrepresentableImageBytes {
-                        width: req.width,
-                        height: req.height,
-                        layers: 1,
-                        bytes_per_texel: texel,
-                    },
-                ))?;
-        let stride = if seed.source.row_length_texels == 0 {
-            tight_row
-        } else {
-            (seed.source.row_length_texels as usize)
-                .checked_mul(texel as usize)
-                .ok_or(DrawError::DrawValidation(
-                    DrawValidationDecline::UnrepresentableImageBytes {
-                        width: req.width,
-                        height: req.height,
-                        layers: 1,
-                        bytes_per_texel: texel,
-                    },
-                ))?
-        };
-        if stride < tight_row {
-            return Err(DrawError::DrawValidation(
-                DrawValidationDecline::TargetGuestSeedRowStride { stride, tight_row },
-            ));
-        }
-        let expected = (req.height.saturating_sub(1) as usize)
-            .checked_mul(stride)
-            .and_then(|prefix| prefix.checked_add(tight_row))
-            .ok_or(DrawError::DrawValidation(
-                DrawValidationDecline::UnrepresentableImageBytes {
-                    width: req.width,
-                    height: req.height,
-                    layers: 1,
-                    bytes_per_texel: texel,
-                },
-            ))?;
-        if seed.source.total_len != expected as u64 {
-            return Err(DrawError::DrawValidation(
-                DrawValidationDecline::TargetGuestSeedLength {
-                    actual: seed.source.total_len,
-                    expected,
-                },
-            ));
-        }
-        let covered = seed.source.runs.iter().map(|run| run.len()).sum();
-        if covered != seed.source.total_len {
-            return Err(DrawError::DrawValidation(
-                DrawValidationDecline::TargetGuestSeedCoverage {
-                    covered,
-                    declared: seed.source.total_len,
-                },
-            ));
-        }
+        validate_color_guest_seed(seed, req.width, req.height, req.primary_color_format())?;
         if req.target_rgba8.is_some() || req.load_from_target || req.seed_from_target.is_some() {
             return Err(DrawError::DrawValidation(
                 DrawValidationDecline::SeedConflictsGuestSeed,
             ));
+        }
+    }
+    for secondary in &req.secondary_targets {
+        if let Some(seed) = secondary.contents.guest_seed() {
+            validate_color_guest_seed(
+                seed,
+                secondary.width,
+                secondary.height,
+                secondary.attachment.format(),
+            )?;
         }
     }
     if let Some(seed_identity) = &req.seed_from_target {
@@ -2039,9 +2078,10 @@ pub(crate) fn validate_v1(req: &DrawRequest) -> Result<(), DrawError> {
             SampledSource::Target(identity) => identity == seed_identity,
             // A staged bind stands for a guest-runs source: no target, no
             // alias of the seed.
-            SampledSource::Bytes(_) | SampledSource::GuestRuns(..) | SampledSource::Staged(_) => {
-                false
-            }
+            SampledSource::Bytes(_)
+            | SampledSource::MipmappedBytes(_)
+            | SampledSource::GuestRuns(..)
+            | SampledSource::Staged(_) => false,
         }) {
             return Err(DrawError::DrawValidation(
                 DrawValidationDecline::SeedAlsoSampled,
@@ -2334,11 +2374,16 @@ pub(crate) fn validate_v1(req: &DrawRequest) -> Result<(), DrawError> {
                         },
                     ));
                 }
-                let is_region = image.byte_origin == super::SampledByteOrigin::SerializedSurfaceView;
-                let subrect_on = crate::config::read(crate::config::LAB_IOSURFACE_SUBRECT_VIEWS).0 == crate::config::Switch::On;
-                let fits_within = image.width <= identity.width() && image.height <= identity.height();
+                let is_region =
+                    image.byte_origin == super::SampledByteOrigin::SerializedSurfaceView;
+                let subrect_on = crate::config::read(crate::config::LAB_IOSURFACE_SUBRECT_VIEWS).0
+                    == crate::config::Switch::On;
+                let fits_within =
+                    image.width <= identity.width() && image.height <= identity.height();
                 if (is_region || subrect_on) && fits_within {
-                    if subrect_on && (identity.width() != image.width || identity.height() != image.height) {
+                    if subrect_on
+                        && (identity.width() != image.width || identity.height() != image.height)
+                    {
                         crate::runtime::drain::note_store_route("iosurface_subrect_view_admitted");
                     }
                 } else if identity.width() != image.width || identity.height() != image.height {
@@ -2354,6 +2399,14 @@ pub(crate) fn validate_v1(req: &DrawRequest) -> Result<(), DrawError> {
                 }
             }
             SampledSource::Bytes(_) => {}
+            SampledSource::MipmappedBytes(levels) => {
+                super::sampled_mips::copies(image, levels).map_err(|reason| {
+                    DrawError::DrawValidation(DrawValidationDecline::SampledMipChain {
+                        binding: image.binding,
+                        reason,
+                    })
+                })?;
+            }
             SampledSource::GuestRuns(src, ..) => {
                 validate_guest_runs_shape(image, src, block, expected)?;
             }
@@ -2486,11 +2539,12 @@ unsafe fn upload_buffer_to_sampled_image(
     extent_depth: u32,
     row_length_texels: u32,
     target_layout: vk::ImageLayout,
+    mip_copies: Option<&[vk::BufferImageCopy]>,
 ) {
     let range = vk::ImageSubresourceRange {
         aspect_mask: vk::ImageAspectFlags::COLOR,
         base_mip_level: 0,
-        level_count: 1,
+        level_count: mip_copies.map_or(1, |copies| copies.len() as u32),
         base_array_layer: 0,
         layer_count: array_layers,
     };
@@ -2501,7 +2555,8 @@ unsafe fn upload_buffer_to_sampled_image(
         .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
         .image(image)
         .subresource_range(range)];
-    crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+    crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+        &ctx.device,
         cb,
         vk::PipelineStageFlags::TOP_OF_PIPE,
         vk::PipelineStageFlags::TRANSFER,
@@ -2524,12 +2579,13 @@ unsafe fn upload_buffer_to_sampled_image(
             height,
             depth: extent_depth,
         })];
-    crate::backend::vulkan::engine::cmd_sink::copy_buffer_to_image(&ctx.device, 
+    crate::backend::vulkan::engine::cmd_sink::copy_buffer_to_image(
+        &ctx.device,
         cb,
         src,
         image,
         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-        &copy,
+        mip_copies.unwrap_or(&copy),
     );
     let dst_access = if target_layout == vk::ImageLayout::GENERAL {
         vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE
@@ -2543,7 +2599,8 @@ unsafe fn upload_buffer_to_sampled_image(
         .new_layout(target_layout)
         .image(image)
         .subresource_range(range)];
-    crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+    crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+        &ctx.device,
         cb,
         vk::PipelineStageFlags::TRANSFER,
         vk::PipelineStageFlags::VERTEX_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
@@ -2728,9 +2785,7 @@ fn lab_mrt_batch() -> bool {
     // 80k -> 11k, ring retire blocks 400-600 -> 0, Finder max_gap 240 -> 130 ms;
     // p044: Safari and Finder mid-transition snapshots on/off alike, no streaks.
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var("REIMS_VGPU_LAB_MRT_BATCH").map_or(true, |v| v != "off")
-    })
+    *ON.get_or_init(|| std::env::var("REIMS_VGPU_LAB_MRT_BATCH").map_or(true, |v| v != "off"))
 }
 
 /// TEMP (lab, `REIMS_VGPU_LAB_MRT_BATCH`, tests): 0 = off, 1 = on, 2 = no
@@ -2981,7 +3036,8 @@ unsafe fn sample_guest_runs(
         if let Some(texels) = texels {
             let img = pools.acquire_sampled(ctx, SampledKey::of(resource), counters)?;
             crate::runtime::drain::note_store_route("t2t_alias_copied");
-            crate::runtime::gather_witness::t2t_alias::COPIED_N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            crate::runtime::gather_witness::t2t_alias::COPIED_N
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             crate::runtime::drain::note_store_route_n("t2t_alias_copied_kb", src.total_len / 1024);
             sampled.push(PreparedSampled::GuestGather {
                 binding: resource.binding,
@@ -3234,7 +3290,7 @@ impl AcquiredDepth {
     /// later edit reaches for the guest's flag alone and gets a validation error
     /// on hosts that check and undefined contents on hosts that do not.
     fn honours_load(&self, guest_wants_load: bool) -> bool {
-        guest_wants_load && (self.content_ready || self.identity.is_some())
+        guest_wants_load && self.content_ready
     }
 }
 
@@ -3318,6 +3374,60 @@ fn note_depth_load_without_content(width: u32, height: u32, stencil: bool) {
 /// query this mutable registry first: such a result can change before the draw
 /// acquires the engine, while this decision cannot race a reclaim or target
 /// replacement.
+/// Whether sampling `requested` through a resident allocated as `resident`
+/// would restate four-channel eight-bit colour as a two-channel sixteen-bit
+/// texel (or the reverse): same texel size, so Vulkan permits the view, but
+/// the bytes mean something else and the blue channel is lost.
+fn resident_layout_restatement(resident: vk::Format, requested: vk::Format) -> bool {
+    use crate::backend::vulkan::translate::pixel::storage_format;
+    let rgba8 = |f: vk::Format| {
+        matches!(
+            storage_format(f),
+            vk::Format::R8G8B8A8_UNORM | vk::Format::B8G8R8A8_UNORM
+        )
+    };
+    let rg16 = |f: vk::Format| {
+        matches!(
+            f,
+            vk::Format::R16G16_SFLOAT
+                | vk::Format::R16G16_UNORM
+                | vk::Format::R16G16_SNORM
+                | vk::Format::R16G16_UINT
+                | vk::Format::R16G16_SINT
+        )
+    };
+    (rg16(resident) && rgba8(requested)) || (rgba8(resident) && rg16(requested))
+}
+
+#[cfg(test)]
+mod resident_layout_restatement_tests {
+    use super::resident_layout_restatement;
+    use ash::vk;
+
+    #[test]
+    fn rg16_resident_under_rgba8_bind_is_a_restatement() {
+        assert!(resident_layout_restatement(
+            vk::Format::R16G16_SFLOAT,
+            vk::Format::B8G8R8A8_SRGB
+        ));
+        assert!(resident_layout_restatement(
+            vk::Format::R8G8B8A8_UNORM,
+            vk::Format::R16G16_SFLOAT
+        ));
+    }
+
+    #[test]
+    fn same_layout_or_unrelated_formats_are_not() {
+        assert!(!resident_layout_restatement(
+            vk::Format::B8G8R8A8_UNORM,
+            vk::Format::B8G8R8A8_SRGB
+        ));
+        assert!(!resident_layout_restatement(
+            vk::Format::R16G16B16A16_SFLOAT,
+            vk::Format::R8G8B8A8_UNORM
+        ));
+    }
+}
 fn validate_sampled_resident(
     binding: u32,
     identity: &TargetIdentity,
@@ -3335,7 +3445,10 @@ fn validate_sampled_resident(
         });
     };
     if !content_ready {
-        crate::runtime::drain::note_store_route("sampled_resident_not_ready_permitted");
+        return Err(DrawExecutionDecline::SampledResidentNotReady {
+            binding,
+            identity: identity.clone(),
+        });
     }
     if resident_width != resource_width || resident_height != resource_height {
         return Err(DrawExecutionDecline::SampledResidentGeometryMismatch {
@@ -3476,18 +3589,7 @@ pub(crate) unsafe fn execute_draw_inner(
     // Slot 0's view supplies the attachment format. The identity names the
     // allocation behind it; treating those as the same question loses Metal's
     // compatible-format texture views (most visibly UNORM versus sRGB).
-    let color0_format = req.color_attachment.map(|a| a.format()).unwrap_or_else(|| {
-        req.target_identity
-            .as_ref()
-            .map(|id| id.resident_format())
-            .unwrap_or_else(|| {
-                if req.depth.is_some() && req.secondary_targets.is_empty() {
-                    vk::Format::UNDEFINED
-                } else {
-                    crate::backend::vulkan::translate::pixel::RESIDENT_RGBA_FORMAT
-                }
-            })
-    });
+    let color0_format = req.primary_color_format();
     // A guest-sourced sampled bind used to force the immediate-submit path.
     // Its read of guest RAM happens when the CB *executes*, and this device
     // acked the packet as soon as it was consumed, so deferred submit stretched
@@ -3869,7 +3971,11 @@ pub(crate) unsafe fn execute_draw_inner(
         .color0_declared
         .is_some_and(|declared| declared.preserves_prior_contents())
     {
-        Color0Load::Undefined
+        if resident_ready {
+            Color0Load::Preserve
+        } else {
+            Color0Load::Clear
+        }
     } else {
         Color0Load::Clear
     };
@@ -3879,8 +3985,13 @@ pub(crate) unsafe fn execute_draw_inner(
     {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if *ON.get_or_init(|| std::env::var("REIMS_VGPU_LAB_C0_LOG").as_deref() == Ok("1")) {
-            if let Some(TargetIdentity::Surface { id, width, height, generation, .. }) =
-                req.target_identity.as_ref()
+            if let Some(TargetIdentity::Surface {
+                id,
+                width,
+                height,
+                generation,
+                ..
+            }) = req.target_identity.as_ref()
             {
                 let tile = (*width == 320 || *width == 512 || (900..=1100).contains(width))
                     && (*height == 256 || *height == 320);
@@ -3916,7 +4027,7 @@ pub(crate) unsafe fn execute_draw_inner(
         }
         pass_key.secondary[i] = SecondaryAttachKey {
             format: sec.attachment.format(),
-            load: sec.load,
+            load: sec.contents.preserves_contents(),
         };
     }
     pass_key.secondary_count = req.secondary_targets.len() as u8;
@@ -4098,7 +4209,10 @@ pub(crate) unsafe fn execute_draw_inner(
     let (vert_digest, vert_module) =
         caches.get_or_create_shader_memoized(ctx, &req.vert_spirv, counters, pools)?;
     let (frag_digest, frag_module) = if req.frag_spirv.is_empty() {
-        (super::digest::Digest128::default(), vk::ShaderModule::null())
+        (
+            super::digest::Digest128::default(),
+            vk::ShaderModule::null(),
+        )
     } else {
         caches.get_or_create_shader_memoized(ctx, &req.frag_spirv, counters, pools)?
     };
@@ -4446,7 +4560,8 @@ pub(crate) unsafe fn execute_draw_inner(
     });
     let seed_slot = if let Some((rgba8, layout)) = seed_wide {
         let pixels = req.width.saturating_mul(req.height);
-        let Some(wide) = restate_seed_as_texels(layout, req.target_seed_order, rgba8, pixels) else {
+        let Some(wide) = restate_seed_as_texels(layout, req.target_seed_order, rgba8, pixels)
+        else {
             return Err(DrawError::DrawExecution(
                 DrawExecutionDecline::SeedFormatUnwritable {
                     format: color0_format,
@@ -4733,30 +4848,38 @@ pub(crate) unsafe fn execute_draw_inner(
                 .as_ref()
                 .is_some_and(|depth| depth.owned.is_some()),
         };
-        let (image, _view, framebuffer) = if let Some((image, view, _)) = registry_multisample_source {
-            let mut views = vec![view, target_view];
-            views.extend(multisample_key.depth_view);
-            let framebuffer = unsafe {
-                pools.ensure_ad_hoc_framebuffer(ctx, render_pass, &views, req.width, req.height, counters)
-            }?;
-            if let Some(identity) = req.multisample_source_identity.as_ref() {
-                // Recorded at acquisition, as the persistent image's layout is:
-                // the pass that follows leaves the samples in this layout.
-                pools.registry_mark_ready_at(identity, pass_key.color_final_layout(0));
-            }
-            (image, view, framebuffer)
-        } else if req.multisample_source != 0 {
-            pools.acquire_multisample_source(
-                ctx,
-                req.multisample_source,
-                multisample_key,
-                render_pass,
-                pass_key.color_final_layout(0),
-                counters,
-            )?
-        } else {
-            pools.acquire_multisample_target(ctx, multisample_key, render_pass, counters)?
-        };
+        let (image, _view, framebuffer) =
+            if let Some((image, view, _)) = registry_multisample_source {
+                let mut views = vec![view, target_view];
+                views.extend(multisample_key.depth_view);
+                let framebuffer = unsafe {
+                    pools.ensure_ad_hoc_framebuffer(
+                        ctx,
+                        render_pass,
+                        &views,
+                        req.width,
+                        req.height,
+                        counters,
+                    )
+                }?;
+                if let Some(identity) = req.multisample_source_identity.as_ref() {
+                    // Recorded at acquisition, as the persistent image's layout is:
+                    // the pass that follows leaves the samples in this layout.
+                    pools.registry_mark_ready_at(identity, pass_key.color_final_layout(0));
+                }
+                (image, view, framebuffer)
+            } else if req.multisample_source != 0 {
+                pools.acquire_multisample_source(
+                    ctx,
+                    req.multisample_source,
+                    multisample_key,
+                    render_pass,
+                    pass_key.color_final_layout(0),
+                    counters,
+                )?
+            } else {
+                pools.acquire_multisample_target(ctx, multisample_key, render_pass, counters)?
+            };
         target_fb = framebuffer;
         if crate::observe::first_sight("exec_multisample_resolve", req.multisample_source) {
             crate::observe::off(format!(
@@ -4852,6 +4975,8 @@ pub(crate) unsafe fn execute_draw_inner(
             },
             GuestTargetLoad::None => None,
         };
+    let secondary_guest_texels =
+        unsafe { secondary_seed::prepare(ctx, pools, counters, req, &mut guest_gathers)? };
     // GPU seed source: resolved after registry_ensure (which protects it from
     // the capacity sweep) so the handle cannot be destroyed under this draw.
     // Every rejection is a distinct named error — the runtime pre-checks
@@ -4867,7 +4992,11 @@ pub(crate) unsafe fn execute_draw_inner(
             })
         })?;
         if !slot.content_ready {
-            crate::runtime::drain::note_store_route("seed_resident_not_ready_permitted");
+            return Err(DrawError::DrawExecution(
+                DrawExecutionDecline::SeedResidentNotReady {
+                    identity: seed_identity.clone(),
+                },
+            ));
         }
         if slot.width != req.width || slot.height != req.height {
             return Err(DrawError::DrawExecution(
@@ -4933,14 +5062,73 @@ pub(crate) unsafe fn execute_draw_inner(
                     staging: st,
                     volume: resource.kind.is_volume(),
                     layers: resource.layers,
+                    mip_copies: None,
+                    bytes: bytes.clone(),
+                    identity: resource.identity,
+                });
+            }
+            SampledSource::MipmappedBytes(levels) => {
+                let copies = super::sampled_mips::copies(resource, levels).map_err(|reason| {
+                    DrawError::DrawValidation(DrawValidationDecline::SampledMipChain {
+                        binding: resource.binding,
+                        reason,
+                    })
+                })?;
+                let mut packed = Vec::new();
+                for (copy, bytes) in copies.iter().zip(levels) {
+                    packed.resize(copy.buffer_offset as usize, 0);
+                    packed.extend_from_slice(bytes);
+                }
+                let bytes = std::sync::Arc::new(packed);
+                let key = SampledKey::of(resource);
+                if let Some(image) = pools.find_cached_sampled(key, &bytes, None, counters) {
+                    sampled.push(PreparedSampled::Cached {
+                        binding: resource.binding,
+                        array_element: resource.array_element,
+                        image,
+                    });
+                    continue;
+                }
+                let image = pools.acquire_sampled(ctx, key, counters)?;
+                let staging = pools.acquire_staging(ctx, bytes.len() as u64, counters)?;
+                pools.write_staging(ctx, &staging, &bytes)?;
+                counters.note_sampled_reupload(bytes.len() as u64, resource.byte_origin);
+                sampled.push(PreparedSampled::Upload {
+                    binding: resource.binding,
+                    array_element: resource.array_element,
+                    image,
+                    staging,
+                    volume: false,
+                    layers: 1,
+                    mip_copies: Some(copies),
+                    bytes,
+                    identity: None,
                 });
             }
             SampledSource::Target(identity) => {
                 // TEMP (lab, RTV_GPU): a serialized view over this resident's
                 // surface — its bind extent is the resident's top-left, read
                 // through the bind's format, and it always takes a snapshot.
-                let is_region = resource.byte_origin == super::SampledByteOrigin::SerializedSurfaceView;
-                let subrect_on = crate::config::read(crate::config::LAB_IOSURFACE_SUBRECT_VIEWS).0 == crate::config::Switch::On;
+                if let Some(seed) = req.secondary_guest_seed_for_sample(resource) {
+                    sample_guest_runs(
+                        ctx,
+                        pools,
+                        counters,
+                        &mut phase,
+                        resource,
+                        &seed.source,
+                        crate::runtime::gather_witness::GatherVouch::Fresh,
+                        None,
+                        None,
+                        &mut sampled,
+                        &mut guest_gathers,
+                    )?;
+                    continue;
+                }
+                let is_region =
+                    resource.byte_origin == super::SampledByteOrigin::SerializedSurfaceView;
+                let subrect_on = crate::config::read(crate::config::LAB_IOSURFACE_SUBRECT_VIEWS).0
+                    == crate::config::Switch::On;
                 let region = is_region || subrect_on;
                 // Reading a resident is using it. Marked before the lookup so
                 // the refusal paths below cannot skip it: a resident whose
@@ -4962,6 +5150,34 @@ pub(crate) unsafe fn execute_draw_inner(
                         slot.memory.is_guest_imported(),
                     )
                 });
+                // TEMP (lab, SNAPSHOT_KEEP_RESIDENT_LAYOUT): a four-channel
+                // eight-bit bind over a resident allocated as a two-channel
+                // sixteen-bit image (a GVA reused across formats) reinterprets
+                // the RG16 bits as RGBA8 bytes - the blue-less icon colours.
+                // Counted with the switch off so an A/B shows the path is hit;
+                // with it on the resident is refused as missing, the existing
+                // recoverable decline, instead of being sampled through.
+                if let Some(slot) = pools.registry_get(identity) {
+                    if resident_layout_restatement(slot.format.allocation(), resource.format) {
+                        crate::runtime::drain::note_store_route(
+                            "snapshot_resident_rg16_restatement_seen",
+                        );
+                        if crate::config::read(crate::config::LAB_SNAPSHOT_KEEP_RESIDENT_LAYOUT).0
+                            == crate::config::Switch::On
+                        {
+                            crate::runtime::drain::note_store_route(
+                                "snapshot_resident_layout_kept",
+                            );
+                            return Err(DrawError::DrawExecution(
+                                DrawExecutionDecline::SampledResidentMissing {
+                                    binding: resource.binding,
+                                    identity: identity.clone(),
+                                    prior: None,
+                                },
+                            ));
+                        }
+                    }
+                }
                 let prior = held
                     .is_none()
                     .then(|| pools.prior_reclaim(identity))
@@ -4991,7 +5207,9 @@ pub(crate) unsafe fn execute_draw_inner(
                         if region && resource.width <= *width && resource.height <= *height =>
                     {
                         if subrect_on && (*width != resource.width || *height != resource.height) {
-                            crate::runtime::drain::note_store_route("iosurface_subrect_view_admitted");
+                            crate::runtime::drain::note_store_route(
+                                "iosurface_subrect_view_admitted",
+                            );
                         }
                         (*width, *height)
                     }
@@ -5018,6 +5236,9 @@ pub(crate) unsafe fn execute_draw_inner(
                     _resident_samples,
                     source_host_accessible,
                 ) = held.expect("validated resident is held");
+                let resident_sample_format = pools
+                    .registry_sample_format(identity, resource.format)
+                    .expect("validated resident is held");
                 let source_view = pools
                     .registry_sample_view(ctx, identity, resource.format, counters)?
                     .expect("validated resident is held");
@@ -5043,7 +5264,11 @@ pub(crate) unsafe fn execute_draw_inner(
                 // A whole guest mip chain when the runtime named one and every
                 // level is a ready resident of its own extent; otherwise level 0
                 // alone, as before, counted.
-                if self_slot.is_none() && !swizzled && !region {
+                if pyramid_source_covers_view(
+                    self_slot.is_some(),
+                    (resource.width, resource.height),
+                    (_resident_width, _resident_height),
+                ) {
                     if let Some(pyramid) = req.sampled_pyramids.iter().find(|p| {
                         p.binding == resource.binding
                             && p.array_element == resource.array_element
@@ -5116,7 +5341,7 @@ pub(crate) unsafe fn execute_draw_inner(
                             "sampled_resident_swizzle_snapshot",
                         ),
                     }
-                    let snapshot_key = SampledKey::of(resource);
+                    let snapshot_key = resident_snapshot_key(resource, resident_sample_format);
                     let image = if self_slot.is_some() && snapshot_key.is_plain_2d_identity_view() {
                         let name = (identity.clone(), snapshot_key);
                         if let Some(existing) = attachment_snapshots.get(&name) {
@@ -5399,7 +5624,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
             .image(image.image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::TOP_OF_PIPE,
             vk::PipelineStageFlags::TRANSFER,
@@ -5416,7 +5642,8 @@ pub(crate) unsafe fn execute_draw_inner(
                 height: image.height,
                 depth: 1,
             })];
-        crate::backend::vulkan::engine::cmd_sink::copy_image(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::copy_image(
+            &ctx.device,
             cb,
             *source_image,
             next_access.layout(),
@@ -5431,7 +5658,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .image(image.image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::TRANSFER,
             vk::PipelineStageFlags::VERTEX_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
@@ -5468,7 +5696,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
             .image(image.image)
             .subresource_range(range)];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::TOP_OF_PIPE,
             vk::PipelineStageFlags::TRANSFER,
@@ -5497,7 +5726,8 @@ pub(crate) unsafe fn execute_draw_inner(
                     height: level.height,
                     depth: 1,
                 })];
-            crate::backend::vulkan::engine::cmd_sink::copy_image(&ctx.device, 
+            crate::backend::vulkan::engine::cmd_sink::copy_image(
+                &ctx.device,
                 cb,
                 level.image,
                 level.next_access.layout(),
@@ -5513,7 +5743,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .image(image.image)
             .subresource_range(range)];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::TRANSFER,
             vk::PipelineStageFlags::VERTEX_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
@@ -5539,7 +5770,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
             .image(target_image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             src_stage,
             vk::PipelineStageFlags::TRANSFER,
@@ -5559,7 +5791,8 @@ pub(crate) unsafe fn execute_draw_inner(
                 height: req.height,
                 depth: 1,
             })];
-        crate::backend::vulkan::engine::cmd_sink::copy_buffer_to_image(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::copy_buffer_to_image(
+            &ctx.device,
             cb,
             seed.buffer(),
             target_image,
@@ -5573,7 +5806,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(target_pass_layout)
             .image(target_image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::TRANSFER,
             target_dst_stage,
@@ -5609,7 +5843,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
             .image(target_image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             dst_stage,
             vk::PipelineStageFlags::TRANSFER,
@@ -5626,7 +5861,8 @@ pub(crate) unsafe fn execute_draw_inner(
                 height: req.height,
                 depth: 1,
             })];
-        crate::backend::vulkan::engine::cmd_sink::copy_image(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::copy_image(
+            &ctx.device,
             cb,
             seed_image,
             seed_next_access.layout(),
@@ -5641,7 +5877,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(target_pass_layout)
             .image(target_image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::TRANSFER,
             target_dst_stage,
@@ -5678,7 +5915,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(target_pass_layout)
             .image(target_image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             src_stage,
             target_dst_stage,
@@ -5714,7 +5952,8 @@ pub(crate) unsafe fn execute_draw_inner(
         let barrier = [vk::MemoryBarrier::default()
             .src_access_mask(src_access)
             .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             src_stage,
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
@@ -5732,7 +5971,9 @@ pub(crate) unsafe fn execute_draw_inner(
     // from UNDEFINED, which discards nothing it wanted.
     if let Some((ms_image, _, ms_access)) = registry_multisample_source {
         if !(req.continues_render_pass && pools.open_pass_echoes(&echo)) {
-            unsafe { outside_pass.before_record(PassObstacle::TargetLayout, pools, &ctx.device, cb) };
+            unsafe {
+                outside_pass.before_record(PassObstacle::TargetLayout, pools, &ctx.device, cb)
+            };
             let (src_stage, src_access) = ms_access.source_scope();
             let old_layout = if pass_key.color0_load == Color0Load::Preserve {
                 ms_access.layout()
@@ -5742,7 +5983,8 @@ pub(crate) unsafe fn execute_draw_inner(
             let barrier = [vk::ImageMemoryBarrier::default()
                 .src_access_mask(src_access)
                 .dst_access_mask(
-                    vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    vk::AccessFlags::COLOR_ATTACHMENT_READ
+                        | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
                 )
                 .old_layout(old_layout)
                 .new_layout(pass_key.color_final_layout(0))
@@ -5832,7 +6074,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(next_access.layout())
             .image(*image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             src_stage,
             vk::PipelineStageFlags::VERTEX_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
@@ -5872,7 +6115,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(vk::ImageLayout::GENERAL)
             .image(*image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::HOST,
             vk::PipelineStageFlags::VERTEX_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
@@ -5891,6 +6135,7 @@ pub(crate) unsafe fn execute_draw_inner(
             staging: st,
             volume,
             layers,
+            mip_copies,
             ..
         } = image
         else {
@@ -5909,6 +6154,7 @@ pub(crate) unsafe fn execute_draw_inner(
             if *volume { *layers } else { 1 },
             0,
             image.descriptor_layout(),
+            mip_copies.as_deref(),
         );
     }
 
@@ -5953,7 +6199,13 @@ pub(crate) unsafe fn execute_draw_inner(
     if !gather_dispatched {
         for gather in &guest_gathers {
             for (source, copies) in &gather.sources {
-                crate::backend::vulkan::engine::cmd_sink::copy_buffer(&ctx.device, cb, *source, gather.dst, copies);
+                crate::backend::vulkan::engine::cmd_sink::copy_buffer(
+                    &ctx.device,
+                    cb,
+                    *source,
+                    gather.dst,
+                    copies,
+                );
             }
         }
     }
@@ -5994,7 +6246,8 @@ pub(crate) unsafe fn execute_draw_inner(
                     | vk::AccessFlags::SHADER_READ
                     | vk::AccessFlags::TRANSFER_READ,
             )];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             src_stage,
             vk::PipelineStageFlags::ALL_GRAPHICS | vk::PipelineStageFlags::TRANSFER,
@@ -6029,7 +6282,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
             .image(target_image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             src_stage,
             vk::PipelineStageFlags::TRANSFER,
@@ -6038,7 +6292,8 @@ pub(crate) unsafe fn execute_draw_inner(
             &[],
             &barrier,
         );
-        crate::backend::vulkan::engine::cmd_sink::clear_color_image(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::clear_color_image(
+            &ctx.device,
             cb,
             target_image,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -6052,7 +6307,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(target_pass_layout)
             .image(target_image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::TRANSFER,
             target_dst_stage,
@@ -6075,7 +6331,8 @@ pub(crate) unsafe fn execute_draw_inner(
                 .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
                 .image(target_image)
                 .subresource_range(super::color_subresource_range())];
-            crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+            crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+                &ctx.device,
                 cb,
                 src_stage,
                 vk::PipelineStageFlags::TRANSFER,
@@ -6093,7 +6350,8 @@ pub(crate) unsafe fn execute_draw_inner(
                     height: req.height,
                     depth: 1,
                 })];
-            crate::backend::vulkan::engine::cmd_sink::copy_buffer_to_image(&ctx.device, 
+            crate::backend::vulkan::engine::cmd_sink::copy_buffer_to_image(
+                &ctx.device,
                 cb,
                 source.buffer(),
                 target_image,
@@ -6107,7 +6365,8 @@ pub(crate) unsafe fn execute_draw_inner(
                 .new_layout(target_pass_layout)
                 .image(target_image)
                 .subresource_range(super::color_subresource_range())];
-            crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+            crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+                &ctx.device,
                 cb,
                 vk::PipelineStageFlags::TRANSFER,
                 target_dst_stage,
@@ -6142,9 +6401,15 @@ pub(crate) unsafe fn execute_draw_inner(
             continue;
         };
         unsafe { outside_pass.before_record(PassObstacle::SampledUpload, pools, &ctx.device, cb) };
-        if let GuestTexels::Resident { image: src_image, access } = source {
+        if let GuestTexels::Resident {
+            image: src_image,
+            access,
+        } = source
+        {
             unsafe {
-                copy_resident_to_sampled_image(ctx, cb, *src_image, *access, img.image, img.width, img.height)
+                copy_resident_to_sampled_image(
+                    ctx, cb, *src_image, *access, img.image, img.width, img.height,
+                )
             };
             continue;
         }
@@ -6179,6 +6444,7 @@ pub(crate) unsafe fn execute_draw_inner(
             if *volume { *layers } else { 1 },
             *row_length_texels,
             image.descriptor_layout(),
+            None,
         );
     }
 
@@ -6187,6 +6453,24 @@ pub(crate) unsafe fn execute_draw_inner(
     // must wait for that prior read (WAR). A freshly-created secondary tracks
     // UNDEFINED and needs no barrier — the render pass discards on CLEAR.
     for (secondary_index, (_id, image, access)) in mrt_secondaries.iter().enumerate() {
+        if let Some(source) = &secondary_guest_texels[secondary_index] {
+            unsafe { outside_pass.before_record(PassObstacle::Seed, pools, &ctx.device, cb) };
+            unsafe {
+                secondary_seed::record(
+                    ctx,
+                    cb,
+                    secondary_seed::Destination {
+                        attachment: &req.secondary_targets[secondary_index],
+                        image: *image,
+                        access: *access,
+                        layout: pass_key.color_layout(secondary_index + 1),
+                        feedback: pass_key.color_feedback(secondary_index + 1),
+                    },
+                    source,
+                );
+            }
+            continue;
+        }
         if *access == super::pools::ResidentAccess::Untouched {
             continue;
         }
@@ -6217,7 +6501,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(pass_key.color_layout(attachment_index))
             .image(*image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             src_stage,
             dst_stage,
@@ -6376,7 +6661,12 @@ pub(crate) unsafe fn execute_draw_inner(
         } else {
             "passbegin_color0_resident"
         });
-        crate::backend::vulkan::engine::cmd_sink::begin_render_pass(&ctx.device, cb, &rp_begin, vk::SubpassContents::INLINE);
+        crate::backend::vulkan::engine::cmd_sink::begin_render_pass(
+            &ctx.device,
+            cb,
+            &rp_begin,
+            vk::SubpassContents::INLINE,
+        );
         pools.note_pass_opened(echo);
     }
     if pass_key.feedback_colors != 0 {
@@ -6394,7 +6684,8 @@ pub(crate) unsafe fn execute_draw_inner(
         let barrier = [vk::MemoryBarrier::default()
             .src_access_mask(src_access)
             .dst_access_mask(dst_access)];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             src_stage,
             dst_stage,
@@ -6526,7 +6817,8 @@ pub(crate) unsafe fn execute_draw_inner(
                 pools.push_descriptor_echo(),
                 vk::DescriptorSet::null(),
                 |writes| {
-                    crate::backend::vulkan::engine::cmd_sink::push_descriptor_set(&push_entry, 
+                    crate::backend::vulkan::engine::cmd_sink::push_descriptor_set(
+                        &push_entry,
                         cb,
                         vk::PipelineBindPoint::GRAPHICS,
                         pipeline_layout,
@@ -6538,7 +6830,8 @@ pub(crate) unsafe fn execute_draw_inner(
             counters.descriptor_pushes.fetch_add(1, Ordering::Relaxed);
         }
     } else if let Some(dset) = dset {
-        crate::backend::vulkan::engine::cmd_sink::bind_descriptor_sets(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::bind_descriptor_sets(
+            &ctx.device,
             cb,
             vk::PipelineBindPoint::GRAPHICS,
             pipeline_layout,
@@ -6554,8 +6847,15 @@ pub(crate) unsafe fn execute_draw_inner(
     unsafe { pools.bind_vertex_buffers(&ctx.device, cb, counters) };
     match (&req.indexed, &index_slot) {
         (Some(indexed), Some(ibuf)) => {
-            crate::backend::vulkan::engine::cmd_sink::bind_index_buffer(&ctx.device, cb, ibuf.buffer, ibuf.offset, indexed.index_type.vk());
-            crate::backend::vulkan::engine::cmd_sink::draw_indexed(&ctx.device, 
+            crate::backend::vulkan::engine::cmd_sink::bind_index_buffer(
+                &ctx.device,
+                cb,
+                ibuf.buffer,
+                ibuf.offset,
+                indexed.index_type.vk(),
+            );
+            crate::backend::vulkan::engine::cmd_sink::draw_indexed(
+                &ctx.device,
                 cb,
                 indexed.index_count,
                 req.instance_count.unwrap_or(1),
@@ -6565,7 +6865,8 @@ pub(crate) unsafe fn execute_draw_inner(
             );
         }
         _ => {
-            crate::backend::vulkan::engine::cmd_sink::draw(&ctx.device, 
+            crate::backend::vulkan::engine::cmd_sink::draw(
+                &ctx.device,
                 cb,
                 req.vertex_count,
                 req.instance_count.unwrap_or(1),
@@ -6627,7 +6928,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(target_pass_layout)
             .image(target_image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
@@ -6636,7 +6938,12 @@ pub(crate) unsafe fn execute_draw_inner(
             &[],
             &back,
         );
-        crate::backend::vulkan::engine::cmd_sink::begin_render_pass(&ctx.device, cb, &rp_begin, vk::SubpassContents::INLINE);
+        crate::backend::vulkan::engine::cmd_sink::begin_render_pass(
+            &ctx.device,
+            cb,
+            &rp_begin,
+            vk::SubpassContents::INLINE,
+        );
         crate::backend::vulkan::engine::cmd_sink::end_render_pass(&ctx.device, cb);
     }
     if layout_churn_probe_enabled() && !target_feedback && !target_guest_backed {
@@ -6668,7 +6975,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
             .image(target_image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             vk::PipelineStageFlags::TRANSFER,
@@ -6684,7 +6992,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(super::caches::color0_pass_exit_layout())
             .image(target_image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::TRANSFER,
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
@@ -6724,7 +7033,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(target_read_layout)
             .image(target_image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             target_dst_stage,
             vk::PipelineStageFlags::TRANSFER,
@@ -6740,7 +7050,8 @@ pub(crate) unsafe fn execute_draw_inner(
                 height: req.height,
                 depth: 1,
             })];
-        crate::backend::vulkan::engine::cmd_sink::copy_image_to_buffer(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::copy_image_to_buffer(
+            &ctx.device,
             cb,
             target_image,
             target_read_layout,
@@ -6754,7 +7065,8 @@ pub(crate) unsafe fn execute_draw_inner(
             .new_layout(target_pass_layout)
             .image(target_image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::TRANSFER,
             target_dst_stage,
@@ -6956,19 +7268,17 @@ pub(crate) unsafe fn execute_draw_inner(
     let mut sampled_retains: Vec<super::pools::SampledRetain> = Vec::new();
     for prepared in &sampled {
         match prepared {
-            PreparedSampled::Upload { binding, image, .. } => {
-                if let Some((SampledSource::Bytes(bytes), identity)) = req
-                    .sampled_images
-                    .iter()
-                    .find(|resource| resource.binding == *binding)
-                    .map(|resource| (&resource.source, resource.identity))
-                {
-                    sampled_retains.push(super::pools::SampledRetain {
-                        image: image.image,
-                        content: super::pools::SampledRetainContent::Bytes(bytes.clone()),
-                        identity,
-                    });
-                }
+            PreparedSampled::Upload {
+                image,
+                bytes,
+                identity,
+                ..
+            } => {
+                sampled_retains.push(super::pools::SampledRetain {
+                    image: image.image,
+                    content: super::pools::SampledRetainContent::Bytes(bytes.clone()),
+                    identity: *identity,
+                });
             }
             // A gather with no vouched identity is dropped by the admit, which
             // is where that decision belongs: an entry nothing can name is
@@ -7299,9 +7609,14 @@ unsafe fn ad_hoc_attachment_views(
         // Read before `registry_ensure_attachment` rather than after, because
         // ensuring is what creates the resident: asking afterwards cannot tell a
         // slot born in this call from one the guest has been rendering into.
-        let sec_ready = prior.is_some_and(|s| s.content_ready);
-        if sec.load && !sec_ready {
-            crate::runtime::drain::note_store_route("secondary_load_not_ready_cleared");
+        if matches!(sec.contents, super::types::SecondaryLoad::Resident)
+            && !prior.is_some_and(|s| s.content_ready)
+        {
+            return Err(DrawError::DrawExecution(
+                DrawExecutionDecline::LoadSecondaryContentNotReady {
+                    identity: sec.identity.clone(),
+                },
+            ));
         }
         let (img, view) = pools.registry_ensure_attachment(
             ctx,
@@ -7356,7 +7671,8 @@ fn clear_values(req: &DrawRequest, has_color0: bool) -> Result<ClearValues, Draw
     // slots and before depth (`caches::get_or_create_pass`). Its load op is
     // DONT_CARE, so the value is never read; the entry exists so depth's lands
     // at depth's index.
-    if resolve_clear_slot(req.multisample_resolve, msaa_resolve_clear_slot_enabled()) && has_color0 {
+    if resolve_clear_slot(req.multisample_resolve, msaa_resolve_clear_slot_enabled()) && has_color0
+    {
         crate::runtime::drain::note_store_route("msaa_resolve_clear_slot_filled");
         clear.push(vk::ClearValue::default())?;
     }
@@ -7492,25 +7808,21 @@ fn fill_descriptor_bindings(
             range: descriptor_range(*len),
         }
     }));
-    out.extend(
-        sampled
-            .iter()
-            .map(|image| {
-                let ty = if crate::runtime::spirv_bind::is_storage_texture_binding(image.binding()) {
-                    vk::DescriptorType::STORAGE_IMAGE
-                } else {
-                    vk::DescriptorType::SAMPLED_IMAGE
-                };
-                super::pools::PushDescriptorBinding::Image {
-                    binding: image.binding(),
-                    array_element: image.array_element(),
-                    ty,
-                    sampler: vk::Sampler::null(),
-                    view: image.view(),
-                    layout: image.descriptor_layout(),
-                }
-            }),
-    );
+    out.extend(sampled.iter().map(|image| {
+        let ty = if crate::runtime::spirv_bind::is_storage_texture_binding(image.binding()) {
+            vk::DescriptorType::STORAGE_IMAGE
+        } else {
+            vk::DescriptorType::SAMPLED_IMAGE
+        };
+        super::pools::PushDescriptorBinding::Image {
+            binding: image.binding(),
+            array_element: image.array_element(),
+            ty,
+            sampler: vk::Sampler::null(),
+            view: image.view(),
+            layout: image.descriptor_layout(),
+        }
+    }));
     out.extend(sampler_handles.iter().map(|(binding, sampler)| {
         super::pools::PushDescriptorBinding::Image {
             binding: *binding,
@@ -7821,7 +8133,8 @@ pub(super) unsafe fn barrier_resident_for_transfer_read(
         .image(image)
         .subresource_range(super::color_subresource_range())];
     unsafe {
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &device,
             cb,
             src_stage,
             vk::PipelineStageFlags::TRANSFER,
@@ -7849,6 +8162,18 @@ fn pyramid_level_admissible(
         && samples <= 1
         && slot_width == width.checked_shr(shift).unwrap_or(0).max(1)
         && slot_height == height.checked_shr(shift).unwrap_or(0).max(1)
+}
+
+// A serialized view may cover the entire resident. Its provenance does not
+// turn a whole mip chain into a cropped image. Component swizzles are carried
+// by the snapshot's SampledKey/image view, so they also preserve every level.
+// A real crop or feedback source still requires the existing snapshot route.
+fn pyramid_source_covers_view(
+    feedback: bool,
+    view_extent: (u32, u32),
+    resident_extent: (u32, u32),
+) -> bool {
+    !feedback && view_extent == resident_extent
 }
 
 /// Every level of `pyramid` as a ready, single-sample resident of exactly its
@@ -7928,10 +8253,10 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(
+        assert!(matches!(
             validate_sampled_resident(34, &identity, 64, 32, false, Some((false, 64, 32, 1)), None),
-            Ok(())
-        );
+            Err(DrawExecutionDecline::SampledResidentNotReady { binding: 34, .. })
+        ));
         assert!(matches!(
             validate_sampled_resident(34, &identity, 64, 32, false, Some((true, 63, 32, 1)), None),
             Err(DrawExecutionDecline::SampledResidentGeometryMismatch {
@@ -8724,6 +9049,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn byte_mip_validation_checks_each_level_instead_of_only_the_base() {
+        let mut req = guest_run_req(5, 3, 60, 0);
+        let image = &mut req.sampled_images[0];
+        image.format = vk::Format::R8_UNORM;
+        image.source = SampledSource::MipmappedBytes(vec![
+            std::sync::Arc::new(vec![1; 15]),
+            std::sync::Arc::new(vec![2; 2]),
+            std::sync::Arc::new(vec![3; 1]),
+        ]);
+        assert!(validate_v1(&req).is_ok());
+        let SampledSource::MipmappedBytes(levels) = &mut req.sampled_images[0].source else {
+            unreachable!()
+        };
+        levels[2] = std::sync::Arc::new(vec![3; 2]);
+        assert_eq!(validation_slug(&req), "vk_draw_validate_sampled_mip_chain");
+    }
+
     fn guest_target_seed_req(
         w: u32,
         h: u32,
@@ -8815,6 +9158,37 @@ mod tests {
         assert!(!pyramid_level_admissible(1, 320, 320, (160, 160, false, 1)));
         assert!(!pyramid_level_admissible(1, 320, 320, (160, 160, true, 4)));
         assert!(!pyramid_level_admissible(40, 320, 320, (0, 0, true, 1)));
+    }
+
+    #[test]
+    fn a_whole_serialized_view_keeps_the_chain_and_its_component_mapping() {
+        let mut resource = target_sample(sampled_identity());
+        resource.byte_origin = super::super::types::SampledByteOrigin::SerializedSurfaceView;
+        resource.swizzle = crate::protocol::pixel_format::swizzle_swap_rb();
+        assert!(pyramid_source_covers_view(false, (16, 16), (16, 16)));
+        let key = SampledKey {
+            levels: 4,
+            ..SampledKey::of(&resource)
+        };
+        assert_eq!(key.levels, 4);
+        assert_eq!(key.swizzle, resource.swizzle);
+        assert!(!pyramid_source_covers_view(false, (8, 16), (16, 16)));
+        assert!(!pyramid_source_covers_view(false, (16, 8), (16, 16)));
+        assert!(!pyramid_source_covers_view(true, (16, 16), (16, 16)));
+    }
+
+    #[test]
+    fn swizzled_resident_snapshot_keeps_the_residents_srgb_interpretation() {
+        let mut resource = target_sample(sampled_identity());
+        // The bind is resolved from a TexelLayout and therefore knows only the
+        // linear storage spelling. The target it samples was declared sRGB.
+        resource.format = vk::Format::B8G8R8A8_UNORM;
+        resource.swizzle = crate::protocol::pixel_format::swizzle_swap_rb();
+
+        let snapshot = resident_snapshot_key(&resource, vk::Format::B8G8R8A8_SRGB);
+
+        assert_eq!(snapshot.format, vk::Format::B8G8R8A8_SRGB);
+        assert_eq!(snapshot.swizzle, resource.swizzle);
     }
 
     /// Capability and view shape jointly select the native feedback contract.
@@ -9123,7 +9497,7 @@ mod tests {
             width: 16,
             height: 16,
             attachment,
-            load: false,
+            contents: super::super::types::SecondaryLoad::Clear,
             blend: None,
             color_write_mask: Default::default(),
         }
@@ -9390,7 +9764,9 @@ mod tests {
             ..DrawRequest::default()
         };
         assert_eq!(
-            clear_values(&full, true).expect("a full pass is a pass").len(),
+            clear_values(&full, true)
+                .expect("a full pass is a pass")
+                .len(),
             1 + MAX_SECONDARY_ATTACH + 1,
             "the capacity is every attachment a pass this device builds can have"
         );
@@ -9417,8 +9793,14 @@ mod tests {
     #[test]
     fn a_multisample_resolve_pass_gives_depth_its_own_index() {
         assert!(super::resolve_clear_slot(true, true));
-        assert!(!super::resolve_clear_slot(true, false), "the kill switch restores v13");
-        assert!(!super::resolve_clear_slot(false, true), "single-sample passes are unchanged");
+        assert!(
+            !super::resolve_clear_slot(true, false),
+            "the kill switch restores v13"
+        );
+        assert!(
+            !super::resolve_clear_slot(false, true),
+            "single-sample passes are unchanged"
+        );
         let req = DrawRequest {
             multisample_resolve: true,
             depth: Some(super::super::types::DepthState {
@@ -9635,6 +10017,101 @@ mod tests {
         assert_eq!(
             validation_slug(&conflicting),
             "vk_draw_validate_seed_conflicts_guest_seed"
+        );
+    }
+
+    #[test]
+    fn a_secondary_self_sample_uses_only_its_exact_native_seed() {
+        let mut req = guest_target_seed_req(16, 16, 1024, 1024, 16);
+        let seed = req.target_guest_seed.take().unwrap();
+        let format = seed.format;
+        let mut secondary =
+            secondary_with_attachment(super::super::types::ColorAttachmentState::new(
+                format,
+                super::super::types::ColorClearValue::default(),
+            ));
+        let identity = secondary.identity.clone();
+        secondary.contents = super::super::types::SecondaryLoad::Guest(seed);
+        req.secondary_targets.push(secondary);
+        let mut sample = target_sample(identity);
+        sample.format = format;
+        assert!(req.secondary_guest_seed_for_sample(&sample).is_some());
+        sample.width = 8;
+        assert!(req.secondary_guest_seed_for_sample(&sample).is_none());
+        sample.width = 16;
+        sample.layers = 2;
+        assert!(req.secondary_guest_seed_for_sample(&sample).is_none());
+        sample.layers = 1;
+        sample.multisampled = true;
+        assert!(req.secondary_guest_seed_for_sample(&sample).is_none());
+        sample.multisampled = false;
+        sample.format = vk::Format::R16_SFLOAT;
+        assert!(req.secondary_guest_seed_for_sample(&sample).is_none());
+        sample.format = format;
+        req.secondary_targets[0].contents = super::super::types::SecondaryLoad::Resident;
+        assert!(req.secondary_guest_seed_for_sample(&sample).is_none());
+    }
+
+    #[test]
+    fn a_secondary_guest_seed_validates_its_own_native_format_and_coverage() {
+        let mut req = guest_target_seed_req(4, 2, 20, 20, 6);
+        let mut seed = req.target_guest_seed.take().unwrap();
+        seed.format = vk::Format::R16_SFLOAT;
+        let mut secondary =
+            secondary_with_attachment(super::super::types::ColorAttachmentState::new(
+                vk::Format::R16_SFLOAT,
+                super::super::types::ColorClearValue::default(),
+            ));
+        secondary.width = 4;
+        secondary.height = 2;
+        secondary.contents = super::super::types::SecondaryLoad::Guest(seed);
+        req.secondary_targets.push(secondary);
+        assert!(validate_v1(&req).is_ok());
+        if let super::super::types::SecondaryLoad::Guest(seed) =
+            &mut req.secondary_targets[0].contents
+        {
+            seed.source.total_len -= 1;
+        }
+        assert_eq!(
+            validation_slug(&req),
+            "vk_draw_validate_target_guest_seed_length"
+        );
+    }
+
+    #[test]
+    fn a_native_seed_uses_the_declared_attachment_without_a_resident_identity() {
+        use super::super::types::{ColorAttachmentState, ColorClearValue};
+        let mut req = guest_target_seed_req(4, 2, 20, 20, 6);
+        req.color_attachment = Some(ColorAttachmentState::new(
+            vk::Format::R16_SFLOAT,
+            ColorClearValue::Float([0.0; 4]),
+        ));
+        req.target_guest_seed.as_mut().unwrap().format = vk::Format::R16_SFLOAT;
+        assert!(req.target_identity.is_none());
+        assert!(validate_v1(&req).is_ok());
+        req.color_attachment = Some(ColorAttachmentState::new(
+            vk::Format::R8G8B8A8_UNORM,
+            ColorClearValue::Float([0.0; 4]),
+        ));
+        assert_eq!(
+            validation_slug(&req),
+            "vk_draw_validate_target_guest_seed_format"
+        );
+    }
+
+    #[test]
+    fn a_native_seed_can_initialize_a_same_byte_srgb_view_but_not_swapped_channels() {
+        use super::super::types::{ColorAttachmentState, ColorClearValue};
+        let mut req = guest_target_seed_req(4, 2, 40, 40, 6);
+        req.color_attachment = Some(ColorAttachmentState::new(
+            vk::Format::R8G8B8A8_SRGB,
+            ColorClearValue::Float([0.0; 4]),
+        ));
+        assert!(validate_v1(&req).is_ok());
+        req.target_guest_seed.as_mut().unwrap().format = vk::Format::B8G8R8A8_UNORM;
+        assert_eq!(
+            validation_slug(&req),
+            "vk_draw_validate_target_guest_seed_format"
         );
     }
 
@@ -10038,6 +10515,22 @@ mod depth_load_tests {
         assert!(!transient.honours_load(true));
     }
 
+    #[test]
+    fn a_named_depth_resident_still_needs_initialized_contents() {
+        let mut depth = acquired(false);
+        depth.identity = Some(TargetIdentity::Surface {
+            id: 7,
+            width: 64,
+            height: 32,
+            generation: 3,
+            format: vk::Format::D32_SFLOAT_S8_UINT,
+        });
+        assert!(!depth.honours_load(true));
+        depth.content_ready = true;
+        assert!(depth.honours_load(true));
+        assert!(!depth.honours_load(false));
+    }
+
     /// Every state a draw request can hold is one the owning layer admits.
     ///
     /// [`depth_stencil_state`] ends in an `expect`, and this is the claim that
@@ -10148,7 +10641,10 @@ fn guest_runs_are_zero(source: &super::GuestRunSource) -> bool {
         let bytes = unsafe {
             std::slice::from_raw_parts((run.host_ptr() as *const u8).add(skip as usize), n as usize)
         };
-        if bytes.chunks(4096).any(|c| c.iter().fold(0u8, |a, &b| a | b) != 0) {
+        if bytes
+            .chunks(4096)
+            .any(|c| c.iter().fold(0u8, |a, &b| a | b) != 0)
+        {
             return false;
         }
         skip = 0;
@@ -10168,9 +10664,7 @@ fn zero_seed_mapping_mode() -> bool {
         return on;
     }
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var("REIMS_VGPU_LAB_ZERO_SEED_MAPPING").as_deref() != Ok("off")
-    })
+    *ON.get_or_init(|| std::env::var("REIMS_VGPU_LAB_ZERO_SEED_MAPPING").as_deref() != Ok("off"))
 }
 
 #[cfg(test)]
@@ -10258,7 +10752,8 @@ pub(super) fn restate_seed_as_texels(
         seed
     };
     let mut wide = vec![0u8; wide_len];
-    crate::protocol::pixel_format::expand_rgba8_to_texel(layout, src, pixels, &mut wide).then_some(wide)
+    crate::protocol::pixel_format::expand_rgba8_to_texel(layout, src, pixels, &mut wide)
+        .then_some(wide)
 }
 
 #[cfg(test)]

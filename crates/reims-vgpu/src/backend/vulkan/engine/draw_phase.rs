@@ -262,8 +262,8 @@
 //! one is bounded per boot rather than latched per key, because the distribution
 //! is the signal — one 950 ms draw and two hundred of them are different bugs.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use crate::lab_clock::LabInstant as Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::observe::phase_clock::{charge_ns, to_us};
 
@@ -513,6 +513,19 @@ static DRAWS: AtomicU64 = AtomicU64::new(0);
 static MAX_NS: AtomicU64 = AtomicU64::new(0);
 static STALLS: AtomicU64 = AtomicU64::new(0);
 static STALL_LINES: AtomicU64 = AtomicU64::new(0);
+/// Candidate 34: the drain census's `draw_us` over the same window, so the line
+/// can carry `unaccounted_us` (draw wall time no phase above owns).
+static DRAIN_DRAW_US: AtomicU64 = AtomicU64::new(0);
+
+/// Fed by the drain census beside its own `draw_us`.
+pub(crate) fn note_drain_draw_us(us: u64) {
+    DRAIN_DRAW_US.fetch_add(us, Ordering::Relaxed);
+}
+
+/// Draw wall time minus every phase, saturating at zero.
+pub(crate) fn unaccounted_us(drain_draw_us: u64, phases_us: u64) -> u64 {
+    drain_draw_us.saturating_sub(phases_us)
+}
 
 /// One window of the split, as taken by the per-second census.
 ///
@@ -583,6 +596,32 @@ pub struct DrawPhaseWindow {
     pub draws: u64,
     pub max_us: u64,
     pub stalls: u64,
+    /// Candidate 34: `drain_duty` `draw_us` accumulated over this window.
+    pub drain_draw_us: u64,
+}
+
+impl DrawPhaseWindow {
+    /// Every phase field summed; they are disjoint (each is carved, not nested).
+    pub fn phases_sum_us(&self) -> u64 {
+        [
+            self.prep_us, self.slot_us, self.pipeline_us, self.pipeline_depth_us,
+            self.pipeline_shader_us, self.pipeline_layout_pass_us, self.pipeline_compile_us,
+            self.pipeline_sampler_us, self.stage_us, self.stage_roles_us, self.stage_vertex_us,
+            self.stage_index_us, self.stage_storage_us, self.stage_seed_us, self.stage_pass_us,
+            self.acquire_us, self.acquire_sampled_us, self.sampled_upload_us,
+            self.acquire_readback_us, self.descriptors_us, self.record_us, self.rec_begin_us,
+            self.rec_barrier_us, self.rec_pass_us, self.rec_state_us, self.rec_draw_us,
+            self.submit_us, self.post_target_us, self.post_store_us, self.post_sampled_us,
+            self.post_park_us, self.wait_us, self.readback_us,
+        ]
+        .iter()
+        .sum()
+    }
+
+    /// `drain_draw_us` minus [`Self::phases_sum_us`].
+    pub fn unaccounted_us(&self) -> u64 {
+        unaccounted_us(self.drain_draw_us, self.phases_sum_us())
+    }
 }
 
 /// Take and clear the window. `None` when no draw ran, so an idle second costs
@@ -628,6 +667,7 @@ pub fn take_window() -> Option<DrawPhaseWindow> {
         draws,
         max_us: to_us(MAX_NS.swap(0, Ordering::Relaxed)),
         stalls: STALLS.swap(0, Ordering::Relaxed),
+        drain_draw_us: DRAIN_DRAW_US.swap(0, Ordering::Relaxed),
     };
     (draws > 0).then_some(w)
 }

@@ -172,10 +172,18 @@ mod tests {
     #[test]
     fn the_embedded_present_sharp_spirv_matches_its_source() {
         if let Some(fresh) = compiled("present_sharp.vert") {
-            assert_eq!(fresh.as_slice(), PRESENT_SHARP_VERT_SPIRV.as_slice(), "recompile present_sharp.vert");
+            assert_eq!(
+                fresh.as_slice(),
+                PRESENT_SHARP_VERT_SPIRV.as_slice(),
+                "recompile present_sharp.vert"
+            );
         }
         if let Some(fresh) = compiled("present_sharp.frag") {
-            assert_eq!(fresh.as_slice(), PRESENT_SHARP_FRAG_SPIRV.as_slice(), "recompile present_sharp.frag");
+            assert_eq!(
+                fresh.as_slice(),
+                PRESENT_SHARP_FRAG_SPIRV.as_slice(),
+                "recompile present_sharp.frag"
+            );
         }
     }
 

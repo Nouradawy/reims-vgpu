@@ -348,8 +348,7 @@ pub(crate) fn warm_cold_refs<
             // The rail is warm: the bail is gone with the cold, and a future
             // backlog replans the ref.
             LANES.with(|lanes| {
-                if let Some((_, lane)) =
-                    lanes.borrow_mut().iter_mut().find(|(t, _)| *t == task_id)
+                if let Some((_, lane)) = lanes.borrow_mut().iter_mut().find(|(t, _)| *t == task_id)
                 {
                     lane.bailed.remove(&texture_ref);
                 }
@@ -428,9 +427,9 @@ pub(super) fn take_backlog<M: crate::runtime::host::HostMemory>(
     }
     let Some((task_id, refs)) = LANES.with(|lanes| {
         let mut lanes = lanes.borrow_mut();
-        let slot = lanes.iter_mut().find(|(t, lane)| {
-            *t != skip_task && !lane.backlog.is_empty()
-        })?;
+        let slot = lanes
+            .iter_mut()
+            .find(|(t, lane)| *t != skip_task && !lane.backlog.is_empty())?;
         let take = budget.min(slot.1.backlog.len());
         let refs: Vec<u32> = slot.1.backlog.drain(..take).collect();
         Some((slot.0, refs))
@@ -1074,10 +1073,7 @@ mod tests {
         let bailed = take_bailed_for(2);
         assert_eq!(bailed.len(), 1);
         assert!(bailed.contains(&3));
-        assert!(
-            take_bailed_for(2).is_empty(),
-            "the bailed seed is one-shot"
-        );
+        assert!(take_bailed_for(2).is_empty(), "the bailed seed is one-shot");
         // And the fresh backlog excludes the done refs: nothing left to take.
         let backlog = take_backlog(&state, &host, 8, 1);
         assert!(

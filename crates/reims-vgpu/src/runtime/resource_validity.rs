@@ -154,8 +154,8 @@ pub fn apply(
             if let Some(m) = state.mappings.get_mut(&id) {
                 m.content_generation = m.content_generation.saturating_add(1);
                 m.guest_stated_gen = m.guest_stated_gen.wrapping_add(1); // TEMP (lab)
-                // Stamped rather than latched: the claim is about this moment,
-                // and the device's next publish into this surface supersedes it.
+                                                                         // Stamped rather than latched: the claim is about this moment,
+                                                                         // and the device's next publish into this surface supersedes it.
                 m.validity.host_cleared_seq = seq;
                 out.bumped = out.bumped.saturating_add(1);
             }

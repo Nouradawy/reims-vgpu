@@ -78,11 +78,15 @@ impl SampledCache {
     }
 
     fn node(&self, i: u32) -> &Node {
-        self.nodes[i as usize].as_ref().expect("live sampled-cache node")
+        self.nodes[i as usize]
+            .as_ref()
+            .expect("live sampled-cache node")
     }
 
     fn node_mut(&mut self, i: u32) -> &mut Node {
-        self.nodes[i as usize].as_mut().expect("live sampled-cache node")
+        self.nodes[i as usize]
+            .as_mut()
+            .expect("live sampled-cache node")
     }
 
     fn link_newest(&mut self, i: u32) {
@@ -156,7 +160,9 @@ impl SampledCache {
             return None;
         }
         self.unlink(i);
-        let node = self.nodes[i as usize].take().expect("live sampled-cache node");
+        let node = self.nodes[i as usize]
+            .take()
+            .expect("live sampled-cache node");
         self.free.push(i);
         self.len -= 1;
         let key = node.entry.slot.key();
@@ -332,7 +338,10 @@ mod tests {
         let key = c.get(first).slot.key();
         c.adopt_identity(second, named(1));
         assert_eq!(c.find_identity(key, named(1)), Some(second));
-        assert!(c.find_identity(key, named(2)).is_none(), "the adopter's old name is gone");
+        assert!(
+            c.find_identity(key, named(2)).is_none(),
+            "the adopter's old name is gone"
+        );
         // The old holder leaves; the name stays with the adopter.
         assert_eq!(c.pop_oldest().map(|e| e.identity), Some(Some(named(1))));
         assert_eq!(c.find_identity(key, named(1)), Some(second));
@@ -351,8 +360,15 @@ mod tests {
         };
         let key = e.slot.key();
         c.push(e);
-        assert!(c.find_content(key, 9, |e| e.content.as_deref() == Some(&vec![2u8; 4])).is_none());
-        assert!(c.find_content(key, 9, |e| e.content.as_deref() == Some(&vec![1u8; 4])).is_some());
-        assert!(c.find_content(key, 8, |_| true).is_none(), "another digest proposes nothing");
+        assert!(c
+            .find_content(key, 9, |e| e.content.as_deref() == Some(&vec![2u8; 4]))
+            .is_none());
+        assert!(c
+            .find_content(key, 9, |e| e.content.as_deref() == Some(&vec![1u8; 4]))
+            .is_some());
+        assert!(
+            c.find_content(key, 8, |_| true).is_none(),
+            "another digest proposes nothing"
+        );
     }
 }

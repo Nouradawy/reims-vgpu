@@ -1738,7 +1738,8 @@ fn a_preserve_seed_reads_the_mapping_window_the_strict_door_refuses() {
     for (i, b) in pattern.iter_mut().enumerate() {
         *b = (i as u8).wrapping_mul(7) | 0x80;
     }
-    host.write_gpa(gpas[0], &pattern).expect("fake pages take writes");
+    host.write_gpa(gpas[0], &pattern)
+        .expect("fake pages take writes");
 
     let c0 = ColorRtRequest {
         slot: 0,
@@ -1765,13 +1766,14 @@ fn a_preserve_seed_reads_the_mapping_window_the_strict_door_refuses() {
     assert_eq!(order, crate::backend::vulkan::engine::SeedOrder::Bgra8);
     // The tight 48x32 BGRA8 window, row by row out of the strided guest
     // pages — the guest's own bytes, not zeros.
-    let (base_off, bpr, _span_end) = crate::runtime::mapping_write::mapper_ref_texture_sample_window(
-        state.mappings.get(&7).unwrap(),
-        48,
-        32,
-        pf::MTL_FORMAT_BGRA8_UNORM,
-    )
-    .expect("the packed estimate resolves a window");
+    let (base_off, bpr, _span_end) =
+        crate::runtime::mapping_write::mapper_ref_texture_sample_window(
+            state.mappings.get(&7).unwrap(),
+            48,
+            32,
+            pf::MTL_FORMAT_BGRA8_UNORM,
+        )
+        .expect("the packed estimate resolves a window");
     let tight = 48 * 4;
     assert_eq!(bytes.len(), tight * 32);
     for y in 0..32u64 {
@@ -1829,7 +1831,10 @@ fn a_preserve_seed_serves_an_eight_bit_gva_window() {
         64 + 4 * 4,
         "one full 64-byte row plus the tight last row"
     );
-    assert_eq!(seed.source.row_length_texels, 16, "a 64-byte row is 16 texels");
+    assert_eq!(
+        seed.source.row_length_texels, 16,
+        "a 64-byte row is 16 texels"
+    );
     crate::runtime::guest_ram_map::reset();
 }
 
@@ -1854,8 +1859,12 @@ fn a_preserve_seed_serves_gva_bytes_when_the_attachment_is_rgba() {
     // define_task_pages_arm64e maps GVA page i to PFN 4+i: the window at GVA
     // page 1 lives at GPA page 5. Two 16-byte BGRA rows, 64-byte stride,
     // channels distinct so a swap or a double swap would show.
-    let row0: [u8; 16] = [10, 20, 30, 255, 11, 21, 31, 255, 12, 22, 32, 255, 13, 23, 33, 255];
-    let row1: [u8; 16] = [40, 50, 60, 255, 41, 51, 61, 255, 42, 52, 62, 255, 43, 53, 63, 255];
+    let row0: [u8; 16] = [
+        10, 20, 30, 255, 11, 21, 31, 255, 12, 22, 32, 255, 13, 23, 33, 255,
+    ];
+    let row1: [u8; 16] = [
+        40, 50, 60, 255, 41, 51, 61, 255, 42, 52, 62, 255, 43, 53, 63, 255,
+    ];
     let gpa = 5u64 << PAGE_SHIFT_ARM64E;
     host.write_gpa(gpa, &row0).expect("row 0 lands");
     host.write_gpa(gpa + 64, &row1).expect("row 1 lands");
@@ -1916,16 +1925,14 @@ fn a_preserve_seed_refusal_names_its_reason() {
         ..Default::default()
     };
     let before = store_route_count("preserve_seed_fb_unresolved");
-    assert!(
-        try_preserve_seed_from_guest_window(
-            &mut state,
-            &mut host,
-            1,
-            &c0,
-            ash::vk::Format::B8G8R8A8_UNORM,
-        )
-        .is_none()
-    );
+    assert!(try_preserve_seed_from_guest_window(
+        &mut state,
+        &mut host,
+        1,
+        &c0,
+        ash::vk::Format::B8G8R8A8_UNORM,
+    )
+    .is_none());
     assert!(
         store_route_count("preserve_seed_fb_unresolved") > before,
         "a mapping that cannot resolve is the named refusal, not a silent one"
@@ -2131,19 +2138,11 @@ fn attachment_alias_resident_chain_selection() {
         load_action: MTL_LOAD_ACTION_LOAD,
         ..Default::default()
     });
-    if !crate::runtime::draw::vulkan::load_seed_rescue_enabled() {
-        assert_eq!(
-            fragment_attachment_alias_sample(&req, 42, None),
-            None,
-            "unarmed LOAD without seed must not alias"
-        );
-    } else {
-        assert_eq!(
-            fragment_attachment_alias_sample(&req, 42, None),
-            Some((8, 8, AttachmentAliasSample::ResidentChain { slot: 0 })),
-            "load_seed_rescue chains unarmed LOAD from resident target"
-        );
-    }
+    assert_eq!(
+        fragment_attachment_alias_sample(&req, 42, None),
+        None,
+        "unarmed LOAD without seed must not alias"
+    );
     req.chain_from_resident = true;
     assert_eq!(
         fragment_attachment_alias_sample(&req, 42, None),
@@ -3856,6 +3855,104 @@ fn a_cube_texture_loads_six_faces_in_slice_order() {
         ),
         "the sixth face must refuse past the allocation, not read past it"
     );
+}
+
+/// A mipmapped cube is six faces at every level, not six level-zero faces and
+/// one accidentally clamped image.  SceneKit's icon material shaders sample
+/// their cube environments with filtered LOD, so preserving only L0 changes
+/// their lighting and colour even though the artwork itself is present.
+#[cfg(feature = "backend-vulkan")]
+#[test]
+fn a_cube_mip_chain_loads_six_faces_for_every_level() {
+    use crate::protocol::endian::{st16, st32, st64};
+    use crate::protocol::pixel_format::MTL_FORMAT_RGBA8_UNORM;
+    use crate::runtime::decode::resource::{
+        list_object_entry_offset, LINEAR_DESC_HANDLE, LINEAR_DESC_SIZE, OBJECT_LIST_ENTRY_LEN,
+        OBJECT_TYPE_TEXTURE, RESOURCE_PAGE_SHIFT, TEXTURE_DESC_BASE_LEN,
+        TEXTURE_DESC_LEVEL_RECORDS, TEXTURE_DESC_MIPMAP_LEVEL_COUNT,
+        TEXTURE_DESC_MIP_LEVEL_RECORD_LEN, TEXTURE_DESC_PIXEL_FORMAT, TEXTURE_DESC_ROW_STRIDE,
+        TEXTURE_DESC_USED_SIZE, TEXTURE_DESC_WIDTH, TEXTURE_LEVEL_HEIGHT, TEXTURE_LEVEL_OFFSET,
+        TEXTURE_LEVEL_ROW_STRIDE, TEXTURE_LEVEL_SIZE, TEXTURE_LEVEL_WIDTH,
+    };
+    use texture_view::{load_cube_mip_chain, NativeUploads};
+
+    let mut state = DeviceState::new(DeviceId(1), PAGE_SHIFT_ARM64E);
+    let mut host = FakeHost::new();
+    gva_mem::define_task_pages_arm64e(&mut host, &mut state, 4, 16);
+    assert!(state.set_object_list(1, 0, 32));
+
+    let (texture_ref, handle) = (7u32, 8u32);
+    let body = TEXTURE_DESC_BASE_LEN + TEXTURE_DESC_MIP_LEVEL_RECORD_LEN;
+    let mut desc = vec![0u8; body];
+    st64(&mut desc[LINEAR_DESC_SIZE..], 0x2000);
+    st32(&mut desc[LINEAR_DESC_HANDLE..], handle);
+    st16(&mut desc[TEXTURE_DESC_MIPMAP_LEVEL_COUNT..], 2);
+    st32(&mut desc[TEXTURE_DESC_USED_SIZE..], 8 * 8 * 4 * 6);
+    st32(&mut desc[TEXTURE_DESC_ROW_STRIDE..], 8 * 4);
+    st32(&mut desc[TEXTURE_DESC_WIDTH..], 8);
+    st32(&mut desc[TEXTURE_DESC_WIDTH + 4..], 8);
+    let level1_offset = 0x1000u64;
+    let rec = TEXTURE_DESC_LEVEL_RECORDS;
+    st64(&mut desc[rec + TEXTURE_LEVEL_OFFSET..], level1_offset);
+    st64(&mut desc[rec + TEXTURE_LEVEL_SIZE..], 4 * 4 * 4 * 6);
+    st64(&mut desc[rec + TEXTURE_LEVEL_ROW_STRIDE..], 4 * 4);
+    st32(&mut desc[rec + TEXTURE_LEVEL_WIDTH..], 4);
+    st32(&mut desc[rec + TEXTURE_LEVEL_HEIGHT..], 4);
+    st16(
+        &mut desc[TEXTURE_DESC_PIXEL_FORMAT + TEXTURE_DESC_MIP_LEVEL_RECORD_LEN..],
+        MTL_FORMAT_RGBA8_UNORM,
+    );
+    let desc_gva = 0x280u64;
+    write_task_gva_arm64e(&mut host, &state.tasks[1], desc_gva, &desc);
+    let mut list_entry = [0u8; OBJECT_LIST_ENTRY_LEN];
+    st32(
+        &mut list_entry[0..],
+        (OBJECT_TYPE_TEXTURE as u32) | ((body as u32) << 8),
+    );
+    list_entry[4..12].copy_from_slice(&desc_gva.to_le_bytes());
+    let list_gva = list_object_entry_offset(texture_ref, 32).unwrap();
+    write_task_gva_arm64e(&mut host, &state.tasks[1], list_gva, &list_entry);
+
+    let data_gva = (handle as u64) << RESOURCE_PAGE_SHIFT;
+    for face in 0u8..6 {
+        write_task_gva_arm64e(
+            &mut host,
+            &state.tasks[1],
+            data_gva + u64::from(face) * 8 * 8 * 4,
+            &vec![0x10 + face; 8 * 8 * 4],
+        );
+        write_task_gva_arm64e(
+            &mut host,
+            &state.tasks[1],
+            data_gva + level1_offset + u64::from(face) * 4 * 4 * 4,
+            &vec![0x80 + face; 4 * 4 * 4],
+        );
+    }
+
+    let entry = objects::lookup_list_entry(&state, &host, 1, texture_ref)
+        .expect("object-list entry must resolve");
+    let tex = decode_texture_descriptor(
+        &objects::read_descriptor(&state, &host, 1, &entry).expect("texture descriptor must read"),
+    )
+    .expect("texture descriptor must decode");
+    let chain = load_cube_mip_chain(
+        &mut state,
+        &mut host,
+        1,
+        texture_ref,
+        &tex,
+        NativeUploads::NONE,
+    )
+    .expect("two cube levels load");
+    assert_eq!(chain.levels.len(), 2);
+    assert_eq!(chain.levels[0].len(), 8 * 8 * 4 * 6);
+    assert_eq!(chain.levels[1].len(), 4 * 4 * 4 * 6);
+    for face in 0u8..6 {
+        let level0_face = &chain.levels[0][usize::from(face) * 8 * 8 * 4..][..8 * 8 * 4];
+        let level1_face = &chain.levels[1][usize::from(face) * 4 * 4 * 4..][..4 * 4 * 4];
+        assert!(level0_face.iter().all(|&byte| byte == 0x10 + face));
+        assert!(level1_face.iter().all(|&byte| byte == 0x80 + face));
+    }
 }
 
 /// qemu-shim: texture linear RGBA16Float is a valid color RT. Stale
@@ -6049,7 +6146,17 @@ fn a_secondary_mrt_slot_binds_its_own_blend() {
 
     let mut host = crate::runtime::host::FakeHost::new();
     let secs = build_secondary_targets(
-        &mut state, &mut host, 1, &colors, &pipeline, &primary, 64, 64,
+        &mut state,
+        &mut host,
+        &DrawEncodeRequest {
+            task_id: 1,
+            colors: colors.clone(),
+            ..Default::default()
+        },
+        &pipeline,
+        &primary,
+        64,
+        64,
     )
     .expect("a contiguous, geometry-matching, resolvable secondary builds");
     assert_eq!(secs.len(), 1, "one secondary attachment expected");
@@ -6087,7 +6194,17 @@ fn a_secondary_mrt_slot_binds_its_own_blend() {
     };
     let mut host = crate::runtime::host::FakeHost::new();
     let secs = build_secondary_targets(
-        &mut state, &mut host, 1, &colors, &unblended, &primary, 64, 64,
+        &mut state,
+        &mut host,
+        &DrawEncodeRequest {
+            task_id: 1,
+            colors: colors.clone(),
+            ..Default::default()
+        },
+        &unblended,
+        &primary,
+        64,
+        64,
     )
     .expect("the same secondary builds whether or not its slot blends");
     assert_eq!(secs.len(), 1);
@@ -6145,9 +6262,12 @@ fn a_warm_ledger_peek_equals_the_serial_secondary_identity() {
     use crate::runtime::decode::resource::RenderPipelineDescriptor;
     let (colors, key, span) = mrt_peek_fixture();
     let mut state = DeviceState::new(DeviceId(1), PAGE_SHIFT_X86);
-    let generation = state
-        .pending_writebacks
-        .ensure_gva_resource(key, 0x2000, span, Some(vec![0x10, 0x11, 0x12, 0x13]));
+    let generation = state.pending_writebacks.ensure_gva_resource(
+        key,
+        0x2000,
+        span,
+        Some(vec![0x10, 0x11, 0x12, 0x13]),
+    );
     let format = crate::backend::vulkan::translate::pixel::color_attachment(colors[1].format)
         .expect("RG16Float is an admitted secondary format")
         .0
@@ -6182,7 +6302,17 @@ fn a_warm_ledger_peek_equals_the_serial_secondary_identity() {
     .expect("a warm ledger does not bail")
     .expect("the secondary builds");
     let drain = build_secondary_targets(
-        &mut state, &mut host, 1, &colors, &pipeline, &primary, 64, 64,
+        &mut state,
+        &mut host,
+        &DrawEncodeRequest {
+            task_id: 1,
+            colors: colors.clone(),
+            ..Default::default()
+        },
+        &pipeline,
+        &primary,
+        64,
+        64,
     )
     .expect("the secondary builds");
     assert_eq!(worker.len(), 1);
@@ -6325,8 +6455,11 @@ fn an_unbuildable_secondary_refuses_the_draw_rather_than_dropping_to_single_rt()
         build_secondary_targets(
             &mut state,
             &mut host,
-            1,
-            &[slot0.clone(), slot1.clone()],
+            &DrawEncodeRequest {
+                task_id: 1,
+                colors: vec![slot0.clone(), slot1.clone()],
+                ..Default::default()
+            },
             &pipeline,
             &primary,
             64,
@@ -6404,8 +6537,11 @@ fn an_unbuildable_secondary_refuses_the_draw_rather_than_dropping_to_single_rt()
     let single = build_secondary_targets(
         &mut state,
         &mut host,
-        1,
-        std::slice::from_ref(&slot0),
+        &DrawEncodeRequest {
+            task_id: 1,
+            colors: vec![slot0.clone()],
+            ..Default::default()
+        },
         &pipeline,
         &primary,
         64,
@@ -6461,7 +6597,17 @@ fn two_secondaries_over_one_destination_refuse_the_draw_like_a_primary_alias() {
     let mut build = |colors: &[ColorRtRequest]| {
         let mut host = crate::runtime::host::FakeHost::new();
         build_secondary_targets(
-            &mut state, &mut host, 1, colors, &pipeline, &primary, 64, 64,
+            &mut state,
+            &mut host,
+            &DrawEncodeRequest {
+                task_id: 1,
+                colors: colors.to_vec(),
+                ..Default::default()
+            },
+            &pipeline,
+            &primary,
+            64,
+            64,
         )
     };
 
@@ -6960,8 +7106,7 @@ fn sampled_plane_keeps_the_packed_allocation_and_checks_its_extent() {
         resource.lifetime_ref(),
     )
     .expect("the retained allocation directly supplies this plane");
-    let super::vulkan::SampledSourceRequest::GuestRuns(source, _, _, 1, None, _, _, _) =
-        request
+    let super::vulkan::SampledSourceRequest::GuestRuns(source, _, _, 1, None, _, _, _) = request
     else {
         panic!("a direct single plane has no copied-content identity")
     };
@@ -8213,9 +8358,9 @@ fn only_a_statically_used_texture_gap_is_given_a_neutral_image() {
             gap(FragUnboundClass::Texture, 6),
             DescriptorUse::NotDeclared,
         ),
-        // Both other classes answer `Used` unconditionally from
-        // `frag_unbound_static_use`, so they are exactly the case that would slip
-        // through a filter written on the verdict alone.
+        // Buffer and sampler gaps are excluded by this helper even when their
+        // own static-use check says `Used`: only textures have a neutral image
+        // substitution path.
         (gap(FragUnboundClass::Buffer, 7), DescriptorUse::Used),
         (gap(FragUnboundClass::Sampler, 8), DescriptorUse::Used),
     ];
@@ -9227,7 +9372,12 @@ fn a_linear_texture_is_zero_only_when_every_texel_is() {
         "another geometry is not answered"
     );
     // One non-zero byte in the last texel of the last row.
-    write_task_gva_arm64e(&mut host, &state.tasks[1], texel_gva + u64::from(bpr) + 15, &[1]);
+    write_task_gva_arm64e(
+        &mut host,
+        &state.tasks[1],
+        texel_gva + u64::from(bpr) + 15,
+        &[1],
+    );
     assert_eq!(
         texture_view::linear_texture_is_zero(&mut state, &mut host, 1, tex_ref, w, h, site),
         Some(false)
@@ -9249,7 +9399,12 @@ fn a_repeated_row_lands_what_a_frame_of_that_row_lands() {
     let (w, h, bpr) = (3u32, 4u32, 16u32);
     let (a, b) = (8u64 << PAGE_SHIFT_ARM64E, 9u64 << PAGE_SHIFT_ARM64E);
     for gva in [a, b] {
-        write_task_gva_arm64e(&mut host, &state.tasks[1], gva, &vec![0xcc; (bpr * h) as usize]);
+        write_task_gva_arm64e(
+            &mut host,
+            &state.tasks[1],
+            gva,
+            &vec![0xcc; (bpr * h) as usize],
+        );
     }
     let rgba_row: Vec<u8> = [10u8, 20, 30, 40].repeat(w as usize);
     let frame = rgba_row.repeat(h as usize);
@@ -9287,7 +9442,11 @@ fn a_repeated_row_lands_what_a_frame_of_that_row_lands() {
     read_task_gva_by_id(&host, &state.tasks, 1, a, &mut ga, PAGE_SHIFT_ARM64E).expect("read a");
     read_task_gva_by_id(&host, &state.tasks, 1, b, &mut gb, PAGE_SHIFT_ARM64E).expect("read b");
     assert_eq!(ga, gb, "the repeated row lands what the frame lands");
-    assert_eq!(&gb[12..16], &[0xcc; 4], "row padding is not the texture's to clear");
+    assert_eq!(
+        &gb[12..16],
+        &[0xcc; 4],
+        "row padding is not the texture's to clear"
+    );
     assert_eq!(&gb[0..4], &native[0..4]);
 }
 
@@ -9696,12 +9855,11 @@ fn a_buffer_texture_window_is_converted_once_until_its_bytes_change() {
 #[cfg(feature = "backend-vulkan")]
 #[test]
 fn surface_sample_format_preserves_native_format_for_non_four_byte_targets() {
-    use crate::model::MappingEntry;
     use crate::backend::vulkan::engine::TargetIdentity;
+    use crate::model::MappingEntry;
     use crate::protocol::pixel_format::{
-        MTL_FORMAT_A8_UNORM, MTL_FORMAT_BGR10A2_UNORM, MTL_FORMAT_BGRA8_UNORM,
-        MTL_FORMAT_R8_UNORM, MTL_FORMAT_RGB10A2_UNORM, MTL_FORMAT_RGBA16_FLOAT,
-        MTL_FORMAT_RGBA8_UNORM,
+        MTL_FORMAT_A8_UNORM, MTL_FORMAT_BGR10A2_UNORM, MTL_FORMAT_BGRA8_UNORM, MTL_FORMAT_R8_UNORM,
+        MTL_FORMAT_RGB10A2_UNORM, MTL_FORMAT_RGBA16_FLOAT, MTL_FORMAT_RGBA8_UNORM,
     };
 
     let mut state = DeviceState::new(DeviceId(1), PAGE_SHIFT_ARM64E);
@@ -9783,8 +9941,8 @@ fn array_slice_view_of_a_linear_texture(
     slice: u64,
 ) -> (u32, Vec<u8>) {
     use crate::protocol::endian::{st16, st32, st64};
-    use crate::runtime::decode::resource::*;
     use crate::protocol::pixel_format::MTL_FORMAT_RGBA8_UNORM;
+    use crate::runtime::decode::resource::*;
 
     let bpp = 4u32;
     let (w, h, depth) = (64u32, 32u32, 3u32);
@@ -9829,7 +9987,10 @@ fn array_slice_view_of_a_linear_texture(
     st32(&mut desc[TEXTURE_VIEW_DESC_LEN..], len as u32);
     st32(&mut desc[TEXTURE_VIEW_DESC_TEXTURE_REF..], view_ref);
     st32(&mut desc[TEXTURE_VIEW_DESC_BASE_REF..], base_ref);
-    st16(&mut desc[TEXTURE_VIEW_DESC_PIXEL_FORMAT..], MTL_FORMAT_RGBA8_UNORM);
+    st16(
+        &mut desc[TEXTURE_VIEW_DESC_PIXEL_FORMAT..],
+        MTL_FORMAT_RGBA8_UNORM,
+    );
     st16(
         &mut desc[TEXTURE_VIEW_DESC_TEXTURE_TYPE..],
         TEXTURE_VIEW_MTL_TYPE_2D,
@@ -9855,7 +10016,12 @@ fn array_slice_view_of_a_linear_texture(
     let s2 = vec![0x33u8; slice_bytes];
     write_task_gva_arm64e(host, &state.tasks[1], alloc_gva, &s0);
     write_task_gva_arm64e(host, &state.tasks[1], alloc_gva + slice_bytes as u64, &s1);
-    write_task_gva_arm64e(host, &state.tasks[1], alloc_gva + (2 * slice_bytes) as u64, &s2);
+    write_task_gva_arm64e(
+        host,
+        &state.tasks[1],
+        alloc_gva + (2 * slice_bytes) as u64,
+        &s2,
+    );
 
     let expected = match slice {
         0 => s0,
@@ -9919,5 +10085,3 @@ fn texture_view_array_slice_64x32x3_s2() {
     assert_eq!(bytes.len(), 64 * 32 * 4);
     assert_eq!(bytes.as_slice(), expected.as_slice());
 }
-
-

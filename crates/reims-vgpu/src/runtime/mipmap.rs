@@ -126,7 +126,13 @@ fn downsample_rgba8_box(
     // arithmetic (b217: the general loop was 49 % of the drain on a page that
     // regenerates a 2560x1440 canvas's mips every frame).
     if src_w == dst_w * 2 && src_h == dst_h * 2 {
-        return Some(halve_rgba8_2x2(src, src_w as usize, dst_w as usize, dst_h as usize, dst_need));
+        return Some(halve_rgba8_2x2(
+            src,
+            src_w as usize,
+            dst_w as usize,
+            dst_h as usize,
+            dst_need,
+        ));
     }
     let mut dst = vec![0u8; dst_need];
     for dy in 0..dst_h {
@@ -165,7 +171,13 @@ fn downsample_rgba8_box(
 
 /// [`downsample_rgba8_box`] for `src = 2 * dst` in both axes: each destination
 /// texel is the half-up mean of its 2x2 source block, per channel.
-fn halve_rgba8_2x2(src: &[u8], src_w: usize, dst_w: usize, dst_h: usize, dst_need: usize) -> Vec<u8> {
+fn halve_rgba8_2x2(
+    src: &[u8],
+    src_w: usize,
+    dst_w: usize,
+    dst_h: usize,
+    dst_need: usize,
+) -> Vec<u8> {
     let mut dst = vec![0u8; dst_need];
     let src_row = src_w * 4;
     let dst_row = dst_w * 4;
@@ -178,7 +190,8 @@ fn halve_rgba8_2x2(src: &[u8], src_w: usize, dst_w: usize, dst_h: usize, dst_nee
             .zip(r1.chunks_exact(8))
         {
             for c in 0..4 {
-                let sum = u16::from(a[c]) + u16::from(a[c + 4]) + u16::from(b[c]) + u16::from(b[c + 4]);
+                let sum =
+                    u16::from(a[c]) + u16::from(a[c + 4]) + u16::from(b[c]) + u16::from(b[c + 4]);
                 o[c] = ((sum + 2) >> 2) as u8;
             }
         }
@@ -428,7 +441,10 @@ fn generate_via_box_filter(
         for level in 1..levels {
             let dw = reims_vgpu_protocol::extent::mip_extent(width, level as u32);
             let dh = reims_vgpu_protocol::extent::mip_extent(height, level as u32);
-            let (pw, ph, prev) = out.last().map(|(w, h, b)| (*w, *h, b.as_slice())).unwrap_or_default();
+            let (pw, ph, prev) = out
+                .last()
+                .map(|(w, h, b)| (*w, *h, b.as_slice()))
+                .unwrap_or_default();
             let Some(next) = downsample_rgba8_box(prev, pw, ph, dw, dh) else {
                 return Err(MipmapStatus::IncompleteLayout);
             };
@@ -686,7 +702,11 @@ mod tests {
         }
         let chain = generate_via_box_filter(MTL_FORMAT_BGRA8_UNORM, w, h, 3, &bgra).unwrap();
         // The reference: swizzle to RGBA, filter, swizzle back.
-        let to_rgba = |v: &[u8]| v.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect::<Vec<u8>>();
+        let to_rgba = |v: &[u8]| {
+            v.chunks_exact(4)
+                .flat_map(|p| [p[2], p[1], p[0], p[3]])
+                .collect::<Vec<u8>>()
+        };
         let mut prev = to_rgba(&bgra);
         let (mut pw, mut ph) = (w, h);
         for level in 1..3u32 {

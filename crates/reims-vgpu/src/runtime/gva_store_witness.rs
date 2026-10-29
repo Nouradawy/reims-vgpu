@@ -471,7 +471,12 @@ fn stamp<H: HostOps>(
     let page_size = state.page_size() as usize;
     // Re-arming an existing key means the same page list by construction — the
     // hash is in the key — so the token is reused and only the stamps move.
-    let token = match state.gva_store_witness.entries.get(&key).filter(|e| e.token != 0) {
+    let token = match state
+        .gva_store_witness
+        .entries
+        .get(&key)
+        .filter(|e| e.token != 0)
+    {
         Some(e) => e.token,
         None => {
             while state.gva_store_witness.entries.len() >= max_tracked_targets() {
@@ -1375,7 +1380,10 @@ mod tests {
         let mut host = DeferHost::new();
         let pages = [3 * PAGE, 4 * PAGE];
         note_store_deferral(&mut state, &mut host, key(0xabc), &pages, false);
-        assert!(super::armed(&state, key(0xabc)), "a read still out arms the writer");
+        assert!(
+            super::armed(&state, key(0xabc)),
+            "a read still out arms the writer"
+        );
         assert_eq!(reach(&state, &host, key(0xabc)), GvaWriteReach::Quiet);
 
         host.resolve();
@@ -1388,7 +1396,10 @@ mod tests {
             reach(&state, &host, key(0xabc)),
             GvaWriteReach::Guest(GuestWriteVerdict::Wrote)
         );
-        assert_eq!(written_pages(&state, &host, key(0xabc)), Some(vec![pages[1]]));
+        assert_eq!(
+            written_pages(&state, &host, key(0xabc)),
+            Some(vec![pages[1]])
+        );
     }
 
     /// A re-Store while the first read is still out keeps that read rather

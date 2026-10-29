@@ -24,11 +24,19 @@ pub(crate) fn video_gate() -> bool {
 /// `REIMS_VGPU_LAB_RELEASE_GUARDS`, read once (default off).
 pub(crate) fn release_guards() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    read_once(&ON, crate::config::LAB_RELEASE_GUARDS, "lab_release_guards_on")
+    read_once(
+        &ON,
+        crate::config::LAB_RELEASE_GUARDS,
+        "lab_release_guards_on",
+    )
 }
 
 /// `REIMS_VGPU_LAB_FRONTBUFFER_LATCH`, read once (default off).
 pub(crate) fn frontbuffer_latch() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    read_once(&ON, crate::config::LAB_FRONTBUFFER_LATCH, "lab_frontbuffer_latch_on")
+    read_once(
+        &ON,
+        crate::config::LAB_FRONTBUFFER_LATCH,
+        "lab_frontbuffer_latch_on",
+    )
 }

@@ -165,8 +165,8 @@ impl Ledger {
             }
             due.push((*k, *w));
             let age = now_us.saturating_sub(w.recorded_us);
-            w.next_due_us = now_us
-                + (age / Self::RECHECK_AGE_DIVISOR).min(Self::RECHECK_MAX_INTERVAL_US);
+            w.next_due_us =
+                now_us + (age / Self::RECHECK_AGE_DIVISOR).min(Self::RECHECK_MAX_INTERVAL_US);
         }
         due
     }
@@ -737,7 +737,14 @@ mod tests {
         assert_eq!(ledger.begin_sweep(1_700_000).len(), 1);
         // Very old: capped at the ceiling.
         assert_eq!(ledger.begin_sweep(60_000_000).len(), 1);
-        assert!(ledger.begin_sweep(60_000_000 + Ledger::RECHECK_MAX_INTERVAL_US - 1).is_empty());
-        assert_eq!(ledger.begin_sweep(60_000_000 + Ledger::RECHECK_MAX_INTERVAL_US).len(), 1);
+        assert!(ledger
+            .begin_sweep(60_000_000 + Ledger::RECHECK_MAX_INTERVAL_US - 1)
+            .is_empty());
+        assert_eq!(
+            ledger
+                .begin_sweep(60_000_000 + Ledger::RECHECK_MAX_INTERVAL_US)
+                .len(),
+            1
+        );
     }
 }

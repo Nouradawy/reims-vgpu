@@ -23,6 +23,8 @@ use metal2vulkan::reflect::ShaderReflection;
 
 use crate::observe::Decline;
 
+mod texture_presence;
+
 type FragmentRelocationCache = HashMap<(bool, bool, bool), Option<Arc<ShaderVariant>>>;
 type M2vResult<T> = Result<T, M2vCacheDecline>;
 
@@ -343,6 +345,7 @@ pub struct ShaderVariant {
     /// also makes relocation agreement structural rather than a call-site
     /// convention.
     pub used_descriptor_bindings: Arc<[u32]>,
+    texture_presence: texture_presence::TexturePresenceVariants,
 }
 
 impl ShaderVariant {
@@ -358,10 +361,18 @@ impl ShaderVariant {
             .collect::<Vec<_>>()
             .into();
         Arc::new(Self {
+            texture_presence: texture_presence::TexturePresenceVariants::new(&words),
             words,
             samplers,
             used_descriptor_bindings,
         })
+    }
+
+    pub fn words_with_texture_presence(
+        &self,
+        present: impl Fn(u32) -> bool,
+    ) -> Result<Arc<Vec<u32>>, &'static str> {
+        self.texture_presence.resolve(&self.words, present)
     }
 }
 
@@ -428,17 +439,18 @@ impl CachedShader {
         if !separate_sampled && !buf_collide && !ms_demote {
             return Some(
                 self.base
-                .get_or_init(|| {
-                    ShaderVariant::of(
-                        self.words.clone(),
-                        crate::runtime::spirv_bind::reflected_sampler_descriptors(
-                            &self.reflection,
-                            false,
+                    .get_or_init(|| {
+                        ShaderVariant::of(
+                            self.words.clone(),
+                            crate::runtime::spirv_bind::reflected_sampler_descriptors(
+                                &self.reflection,
+                                false,
+                            )
+                            .into(),
                         )
-                        .into(),
-                    )
-                })
-                .clone());
+                    })
+                    .clone(),
+            );
         }
         let mut cache = self.frag_reloc.lock().unwrap_or_else(|e| e.into_inner());
         cache
@@ -977,7 +989,7 @@ mod disk {
                         v.to_string_lossy().into_owned(),
                     )
                 })
-                .filter(|(k, _)| k.starts_with("METAL2VULKAN_"))
+                .filter(|(k, _)| k.starts_with("METAL2VULKAN_") || k.starts_with("REIMS_VGPU_M2V_"))
                 .collect();
             vars.sort();
             let mut env = Vec::new();
@@ -1448,7 +1460,8 @@ mod disk {
 
 fn translate_air(air: &[u8], stage: Stage) -> M2vResult<CachedShader> {
     let id = ShaderId::render(stage, air);
-    let (spirv, reflection) = disk::obtain(disk::global(), id, || translate_air_raw(air, stage))?;
+    let (spirv, reflection) = disk::obtain(disk::global(), id, || translate_air_raw(air, stage))
+        .inspect_err(|_| capture_air(air, stage, &[]))?;
     capture_air(air, stage, &spirv);
     finish_translated(spirv, reflection, stage)
 }
@@ -1478,7 +1491,8 @@ fn translate_kernel_air(air: &[u8], local_size: [u32; 3]) -> M2vResult<CachedSha
     let id = ShaderId::kernel(air, local_size);
     let (spirv, reflection) = disk::obtain(disk::global(), id, || {
         translate_kernel_air_raw(air, local_size)
-    })?;
+    })
+    .inspect_err(|_| capture_air(air, Stage::Kernel, &[]))?;
     capture_air(air, Stage::Kernel, &spirv);
     if reflection.local_size != Some(local_size) {
         return Err(M2vCacheDecline::KernelLocalSizeMismatch {

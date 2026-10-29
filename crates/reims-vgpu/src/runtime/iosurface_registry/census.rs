@@ -130,3 +130,27 @@ pub fn note_mipgen_unsupported() {
     note_store_route("format_mipgen_unsupported");
 }
 
+/// Note that an entry was evicted from the persistent registry without writeback (e.g. CpuDirty).
+pub fn note_evict() {
+    note_store_route("iosurface_evict");
+}
+
+/// Note that a GpuAuthoritative entry required asynchronous writeback before eviction (Rule R6).
+pub fn note_evict_writeback() {
+    note_store_route("iosurface_evict_writeback");
+}
+
+/// Note that an evicted entry was restored on next use by uploading from guest pages (Rule R4).
+pub fn note_restore() {
+    note_store_route("iosurface_restore");
+}
+
+/// Note that the registry exceeded its VRAM budget and could not evict enough non-in-flight entries.
+pub fn note_budget_exceeded() {
+    note_store_route("iosurface_budget_exceeded");
+}
+
+/// Note that a cold clear was refused for an entry with prior content (Rule R4).
+pub fn note_cold_clear_refused() {
+    note_store_route("iosurface_cold_clear_refused");
+}

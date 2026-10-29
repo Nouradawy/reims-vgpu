@@ -86,10 +86,7 @@ pub(crate) fn pass_inv_mode() -> bool {
 /// Force the mode for the lifetime of the returned guard (tests only).
 #[cfg(test)]
 pub(crate) fn test_mode(on: bool) -> TestModeGuard {
-    TEST_MODE.store(
-        if on { 2 } else { 1 },
-        std::sync::atomic::Ordering::Relaxed,
-    );
+    TEST_MODE.store(if on { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
     TestModeGuard
 }
 
@@ -175,14 +172,9 @@ impl PassInvariants {
     /// Whether a Surface identity still names the mapping's current
     /// incarnation — one `HashMap` get and a `u32` compare, priced to sit in
     /// front of the lookups the recompute it guards would do.
-    fn surface_generation_current(
-        state: &DeviceState,
-        identity: &Option<TargetIdentity>,
-    ) -> bool {
+    fn surface_generation_current(state: &DeviceState, identity: &Option<TargetIdentity>) -> bool {
         match identity {
-            Some(TargetIdentity::Surface {
-                id, generation, ..
-            }) => state
+            Some(TargetIdentity::Surface { id, generation, .. }) => state
                 .mappings
                 .get(id)
                 .is_some_and(|m| u64::from(m.identity_generation) == *generation),
@@ -224,8 +216,9 @@ impl PassInvariants {
 /// TEMP (lab, FRAME_GATE + AHEAD): the invariants a pass recorded, by its
 /// target, for the next stream that renders into the same target to start its
 /// ahead preparation from (a commit then compares them with its own draw 0's).
-static CACHE: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashMap<PassTargetKey, PassInvariants>>> =
-    std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+static CACHE: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashMap<PassTargetKey, PassInvariants>>,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
 
 /// TEMP (lab, FRAME_GATE + AHEAD): remember a pass's invariants.
 pub(crate) fn cache_put(inv: &PassInvariants) {
@@ -251,7 +244,9 @@ pub(crate) fn same_facts(a: &PassInvariants, b: &PassInvariants) -> bool {
         && a.render_identity == b.render_identity
         && match (&a.guest_backing, &b.guest_backing) {
             (None, None) => true,
-            (Some(x), Some(y)) => x.backing == y.backing && std::sync::Arc::ptr_eq(&x.import, &y.import),
+            (Some(x), Some(y)) => {
+                x.backing == y.backing && std::sync::Arc::ptr_eq(&x.import, &y.import)
+            }
             _ => false,
         }
 }
@@ -445,9 +440,8 @@ mod tests {
         let gpa = 0x4200_0000u64;
         host.map_range(gpa, 1 << PAGE_SHIFT_X86, 0);
         assert!(state.map_surface(mid));
-        state.mappings.get_mut(&mid).unwrap().page_entries = vec![
-            ((gpa >> PAGE_SHIFT_X86) as u32) << PAGE_ENTRY_PFN_SHIFT | PAGE_ENTRY_VALID,
-        ];
+        state.mappings.get_mut(&mid).unwrap().page_entries =
+            vec![((gpa >> PAGE_SHIFT_X86) as u32) << PAGE_ENTRY_PFN_SHIFT | PAGE_ENTRY_VALID];
         assert!(state.set_mapping_geom(mid, 16, 16, MTL_FORMAT_BGRA8_UNORM));
         crate::runtime::guest_ram::latch_import_limits(1 << PAGE_SHIFT_X86, 1 << 30, 1 << 30);
         (state, host)
@@ -498,7 +492,10 @@ mod tests {
             super::super::render_chain_identity(&state, &req),
             "the recorded chain identity is the one a late per-draw call answers"
         );
-        assert!(inv.render_identity.is_none(), "a GVA target has no render identity");
+        assert!(
+            inv.render_identity.is_none(),
+            "a GVA target has no render identity"
+        );
         assert!(inv.guest_backing.is_none());
 
         // Reuse: same request, unchanged state → the hoisted values stand.
@@ -527,9 +524,8 @@ mod tests {
         let mut req = mapper_ref_request();
 
         req.gva_alloc_gen = super::super::gva_alloc_generation(&mut state, &mut host, &req);
-        let serial_backing = super::super::mapper_ref_texture_guest_target_backing(
-            &mut state, &mut host, &req,
-        );
+        let serial_backing =
+            super::super::mapper_ref_texture_guest_target_backing(&mut state, &mut host, &req);
         let inv = record_from_commit(&state, &req, serial_backing.clone());
         assert_eq!(
             inv.chain_identity,
@@ -539,7 +535,10 @@ mod tests {
             inv.render_identity,
             super::super::mapper_ref_texture_render_identity(&state, &req)
         );
-        assert!(inv.render_identity.is_some(), "a publishing store resolves one");
+        assert!(
+            inv.render_identity.is_some(),
+            "a publishing store resolves one"
+        );
 
         // The store identity follows the record's role in the packet, not the
         // template: draw 0 (no writeback) declines, the last record (writeback)

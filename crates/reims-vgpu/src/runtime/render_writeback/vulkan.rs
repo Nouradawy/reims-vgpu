@@ -50,13 +50,25 @@ pub(crate) fn lab_pay_alias_landed<M: HostMemory + HostOps>(
         note_store_route("pay_alias_settled");
     }
     let v0 = v1;
-    let Some((gpas, span)) = crate::runtime::mapping_write::lab_t2t_alias_window(state, mapping_id, width, height) else {
+    let Some((gpas, span)) =
+        crate::runtime::mapping_write::lab_t2t_alias_window(state, mapping_id, width, height)
+    else {
         note_store_route("pay_alias_shape");
         return;
     };
-    crate::runtime::gather_witness::lab_t2t_diag::note_defer(gpas.first().copied(), gpas.len(), mapping_id);
-    let token = host.track_guest_writes(&gpas, 1usize << state.page_shift).unwrap_or(0);
-    let gen = if token == 0 { None } else { host.guest_write_gen(token) };
+    crate::runtime::gather_witness::lab_t2t_diag::note_defer(
+        gpas.first().copied(),
+        gpas.len(),
+        mapping_id,
+    );
+    let token = host
+        .track_guest_writes(&gpas, 1usize << state.page_shift)
+        .unwrap_or(0);
+    let gen = if token == 0 {
+        None
+    } else {
+        host.guest_write_gen(token)
+    };
     let Some(gen) = gen else {
         if token != 0 {
             host.untrack_guest_writes(token);
@@ -126,7 +138,11 @@ pub(crate) fn copy_resident_into_mapping<M: HostMemory + HostOps>(
                 height,
             );
             drop(leased);
-            crate::runtime::drain::note_store_route(if ok { "t2t_copy_leased" } else { "t2t_copy_write_refused" });
+            crate::runtime::drain::note_store_route(if ok {
+                "t2t_copy_leased"
+            } else {
+                "t2t_copy_write_refused"
+            });
             return ok;
         }
         drop(leased);
@@ -140,8 +156,14 @@ pub(crate) fn copy_resident_into_mapping<M: HostMemory + HostOps>(
         return false;
     };
     let bytes = std::sync::Arc::new(scanout);
-    let ok = crate::runtime::mapping_write::write_bgra8_owned(state, host, mapping_id, &bytes, bpr, width, height);
-    crate::runtime::drain::note_store_route(if ok { "t2t_copy_copied" } else { "t2t_copy_write_refused" });
+    let ok = crate::runtime::mapping_write::write_bgra8_owned(
+        state, host, mapping_id, &bytes, bpr, width, height,
+    );
+    crate::runtime::drain::note_store_route(if ok {
+        "t2t_copy_copied"
+    } else {
+        "t2t_copy_write_refused"
+    });
     ok
 }
 
@@ -249,18 +271,26 @@ pub(crate) fn defer_resident_into_mapping<M: HostMemory + HostOps>(
     // A whole-plane copy into the same mapping supersedes an older one nobody
     // has read: no reader landed it, and this frame replaces all of it.
     let before = pending.len();
-    let parked_before = pending.iter().filter(|p| p.mapping_id == mapping_id && p.window.is_some()).count();
+    let parked_before = pending
+        .iter()
+        .filter(|p| p.mapping_id == mapping_id && p.window.is_some())
+        .count();
     pending.retain(|p| p.mapping_id != mapping_id);
     if pending.len() != before {
         crate::runtime::drain::note_store_route("t2t_defer_superseded");
-        t2t_park::SUPERSEDED_N.fetch_add(parked_before as u64, std::sync::atomic::Ordering::Relaxed);
+        t2t_park::SUPERSEDED_N
+            .fetch_add(parked_before as u64, std::sync::atomic::Ordering::Relaxed);
     }
     if let Some(m) = state.mappings.get(&mapping_id) {
         let first = m
             .page_entries
             .first()
             .and_then(|&e| crate::protocol::iosurface_pages::entry_gpa_shift(e, state.page_shift));
-        crate::runtime::gather_witness::lab_t2t_diag::note_defer(first, m.page_entries.len(), mapping_id);
+        crate::runtime::gather_witness::lab_t2t_diag::note_defer(
+            first,
+            m.page_entries.len(),
+            mapping_id,
+        );
     }
     pending.push(PendingT2t {
         mapping_id,
@@ -365,7 +395,12 @@ pub(crate) mod t2t_park {
                 let (i, m) = bit(g);
                 bits[i] |= m;
             }
-            Self { gpas, sorted, bits, span }
+            Self {
+                gpas,
+                sorted,
+                bits,
+                span,
+            }
         }
 
         pub(crate) fn contains(&self, gpa: u64) -> bool {
@@ -394,15 +429,20 @@ pub(crate) mod t2t_park {
     const SERVED_CAP: usize = 4;
 
     /// Parked frames now - the one atomic every overlap question opens with.
-    pub(crate) static PARKED_N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    pub(crate) static PARKED_N: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
     /// Census for the `lab_t2t_diag` line.
-    pub(crate) static PARKED_TOTAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    pub(crate) static SUPERSEDED_N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    pub(crate) static PARKED_TOTAL: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    pub(crate) static SUPERSEDED_N: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
     pub(crate) static BOUND_N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     pub(crate) static KEPT_N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     pub(crate) static LANDED_N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    pub(crate) static SERVED_RES_N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    pub(crate) static SERVED_RB_N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    pub(crate) static SERVED_RES_N: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    pub(crate) static SERVED_RB_N: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
     /// Parked frames landed by a map-family command, by the drain's arm: map,
     /// unmap, unmap with no resolved page (all three land none), delete,
     /// invalidate, synchronize.
@@ -419,7 +459,11 @@ pub(crate) mod t2t_park {
             return None;
         }
         let served = SERVED.lock().unwrap_or_else(|e| e.into_inner());
-        served.iter().rev().find(|(g, _)| *g == generation).map(|(_, s)| Arc::clone(s))
+        served
+            .iter()
+            .rev()
+            .find(|(g, _)| *g == generation)
+            .map(|(_, s)| Arc::clone(s))
     }
 
     pub(super) fn list_served(generation: u64, served: Arc<Served>) {
@@ -437,9 +481,11 @@ pub(crate) mod t2t_park {
             return false;
         }
         let pending = super::PENDING_T2T.lock().unwrap_or_else(|e| e.into_inner());
-        pending
-            .iter()
-            .any(|p| p.window.as_ref().is_some_and(|w| w.overlaps(gpas.iter().copied())))
+        pending.iter().any(|p| {
+            p.window
+                .as_ref()
+                .is_some_and(|w| w.overlaps(gpas.iter().copied()))
+        })
     }
 }
 
@@ -473,7 +519,9 @@ pub(crate) fn t2t_park_before_gather<M: HostMemory + HostOps>(
     }
     if !land.is_empty() {
         let site = std::panic::Location::caller();
-        land_where(state, host, site, |p| p.window.is_some() && land.contains(&p.mapping_id));
+        land_where(state, host, site, |p| {
+            p.window.is_some() && land.contains(&p.mapping_id)
+        });
     }
     exact
 }
@@ -484,11 +532,19 @@ pub(crate) fn t2t_park_before_gather<M: HostMemory + HostOps>(
 /// the bind is Fresh under that generation - `seen_generation` when the witness
 /// already refused (it minted it), else `fresh` (the caller moves the entry to
 /// it) - and the engine fills it from the frame.
-pub(crate) fn t2t_park_bind(gpas: &[u64], span: u64, seen_generation: u64, vouched: bool, fresh: u64) -> Option<u64> {
+pub(crate) fn t2t_park_bind(
+    gpas: &[u64],
+    span: u64,
+    seen_generation: u64,
+    vouched: bool,
+    fresh: u64,
+) -> Option<u64> {
     let mut pending = PENDING_T2T.lock().unwrap_or_else(|e| e.into_inner());
-    let p = pending
-        .iter_mut()
-        .find(|p| p.window.as_ref().is_some_and(|w| w.span == span && w.gpas.as_slice() == gpas))?;
+    let p = pending.iter_mut().find(|p| {
+        p.window
+            .as_ref()
+            .is_some_and(|w| w.span == span && w.gpas.as_slice() == gpas)
+    })?;
     let generation = if vouched {
         if p.served_gen == Some(seen_generation) {
             // The retained image is this frame's; keep it named in case the
@@ -527,24 +583,40 @@ pub(crate) fn land_t2t_tranche_end<M: HostMemory + HostOps>(state: &mut DeviceSt
 /// TEMP (lab, T2T_PARK): `mapping_id`'s owed frame unless it is parked - the
 /// pay of a sampled gather, whose witness lands or serves a parked one.
 #[track_caller]
-pub(crate) fn land_t2t_unparked<M: HostMemory + HostOps>(state: &mut DeviceState, host: &mut M, mapping_id: u32) {
+pub(crate) fn land_t2t_unparked<M: HostMemory + HostOps>(
+    state: &mut DeviceState,
+    host: &mut M,
+    mapping_id: u32,
+) {
     let site = std::panic::Location::caller();
-    land_where(state, host, site, |p| p.mapping_id == mapping_id && p.window.is_none());
+    land_where(state, host, site, |p| {
+        p.mapping_id == mapping_id && p.window.is_none()
+    });
 }
 
 /// TEMP (lab, T2T_PARK): every owed frame but the parked ones.
 #[track_caller]
-pub(crate) fn land_t2t_unparked_all<M: HostMemory + HostOps>(state: &mut DeviceState, host: &mut M) {
+pub(crate) fn land_t2t_unparked_all<M: HostMemory + HostOps>(
+    state: &mut DeviceState,
+    host: &mut M,
+) {
     let site = std::panic::Location::caller();
     land_where(state, host, site, |p| p.window.is_none());
 }
 
 /// TEMP (lab, T2T_PARK): the parked frame owed to exactly this window.
 #[track_caller]
-pub(crate) fn land_t2t_window<M: HostMemory + HostOps>(state: &mut DeviceState, host: &mut M, gpas: &[u64], span: u64) {
+pub(crate) fn land_t2t_window<M: HostMemory + HostOps>(
+    state: &mut DeviceState,
+    host: &mut M,
+    gpas: &[u64],
+    span: u64,
+) {
     let site = std::panic::Location::caller();
     land_where(state, host, site, |p| {
-        p.window.as_ref().is_some_and(|w| w.span == span && w.gpas.as_slice() == gpas)
+        p.window
+            .as_ref()
+            .is_some_and(|w| w.span == span && w.gpas.as_slice() == gpas)
     });
 }
 
@@ -552,7 +624,11 @@ pub(crate) fn land_t2t_window<M: HostMemory + HostOps>(state: &mut DeviceState, 
 /// a reader or writer of the pages through a mapping other than the one the
 /// frame is owed through (that one lands it by name).
 #[track_caller]
-pub(crate) fn land_t2t_over_mapping<M: HostMemory + HostOps>(state: &mut DeviceState, host: &mut M, mapping_id: u32) {
+pub(crate) fn land_t2t_over_mapping<M: HostMemory + HostOps>(
+    state: &mut DeviceState,
+    host: &mut M,
+    mapping_id: u32,
+) {
     if !t2t_park::any() {
         return;
     }
@@ -571,7 +647,9 @@ pub(crate) fn land_t2t_over_mapping<M: HostMemory + HostOps>(state: &mut DeviceS
         let pending = PENDING_T2T.lock().unwrap_or_else(|e| e.into_inner());
         pending
             .iter()
-            .filter(|p| p.mapping_id != mapping_id && p.window.as_ref().is_some_and(|w| w.overlaps(pages())))
+            .filter(|p| {
+                p.mapping_id != mapping_id && p.window.as_ref().is_some_and(|w| w.overlaps(pages()))
+            })
             .map(|p| p.mapping_id)
             .collect()
     };
@@ -579,14 +657,22 @@ pub(crate) fn land_t2t_over_mapping<M: HostMemory + HostOps>(state: &mut DeviceS
         return;
     }
     let site = std::panic::Location::caller();
-    land_where(state, host, site, |p| p.window.is_some() && hits.contains(&p.mapping_id));
+    land_where(state, host, site, |p| {
+        p.window.is_some() && hits.contains(&p.mapping_id)
+    });
 }
 
 /// TEMP (lab T2T_DEFER): land the owed T2T frames - those for `only`, or all.
 #[track_caller]
-pub(crate) fn land_t2t<M: HostMemory + HostOps>(state: &mut DeviceState, host: &mut M, only: Option<u32>) {
+pub(crate) fn land_t2t<M: HostMemory + HostOps>(
+    state: &mut DeviceState,
+    host: &mut M,
+    only: Option<u32>,
+) {
     let lab_site = std::panic::Location::caller();
-    land_where(state, host, lab_site, |p| only.is_none_or(|m| p.mapping_id == m));
+    land_where(state, host, lab_site, |p| {
+        only.is_none_or(|m| p.mapping_id == m)
+    });
 }
 
 /// TEMP (lab T2T_DEFER): land the owed T2T frames `pick` selects.
@@ -637,7 +723,13 @@ fn land_where<M: HostMemory + HostOps>(
                 // TEMP (lab, T2T_PARK): a parked frame lands around what the
                 // guest stored since it parked (see the stamp at the defer).
                 let guest_owned = if p.window.is_some() {
-                    match crate::runtime::surface_currency::surface_currency(state, &*host, p.mapping_id, p.width, p.height) {
+                    match crate::runtime::surface_currency::surface_currency(
+                        state,
+                        &*host,
+                        p.mapping_id,
+                        p.width,
+                        p.height,
+                    ) {
                         crate::runtime::surface_currency::SurfaceCurrency::WrotePixels(owned) => {
                             crate::runtime::drain::note_store_route("t2t_park_landed_around_guest");
                             Some(owned.ranges)
@@ -651,6 +743,8 @@ fn land_where<M: HostMemory + HostOps>(
                 } else {
                     None
                 };
+                // The pages hold exactly the frame only when nothing was skipped.
+                let landed_whole = guest_owned.is_none();
                 let ok = match guest_owned {
                     Some(skip) => crate::runtime::mapping_write::write_bgra8_skipping_uncached(
                         state,
@@ -673,13 +767,26 @@ fn land_where<M: HostMemory + HostOps>(
                     ),
                 };
                 drop(frame);
-                // TEMP (lab, T2T_ALIAS): name the landed pages and the frame in them.
-                if ok && crate::runtime::gather_witness::t2t_alias::on() {
+                // TEMP (lab, T2T_ALIAS): name the landed pages and the frame in them -
+                // only when that is what they hold. Landed around the guest's own
+                // stores, they are the frame *and* those stores, and naming them
+                // as the pure resident let the next gather of that window confirm
+                // an alias that drops the guest's writes (host-only verdict, then
+                // `note_decided`).
+                if ok && landed_whole && crate::runtime::gather_witness::t2t_alias::on() {
                     if let (Some(version), Some((gpas, span))) = (
                         p.source_version,
-                        crate::runtime::mapping_write::lab_t2t_alias_window(state, p.mapping_id, p.width, p.height),
+                        crate::runtime::mapping_write::lab_t2t_alias_window(
+                            state,
+                            p.mapping_id,
+                            p.width,
+                            p.height,
+                        ),
                     ) {
-                        let alias = crate::backend::vulkan::engine::t2t_alias_register(p.source.clone(), version);
+                        let alias = crate::backend::vulkan::engine::t2t_alias_register(
+                            p.source.clone(),
+                            version,
+                        );
                         crate::runtime::gather_witness::t2t_alias::note_landed(gpas, span, alias);
                         crate::runtime::drain::note_store_route("t2t_alias_landed");
                     }
@@ -690,7 +797,11 @@ fn land_where<M: HostMemory + HostOps>(
                     lab_wait,
                     (lab_t0.elapsed().as_micros() as u64).saturating_sub(lab_wait),
                 );
-                crate::runtime::drain::note_store_route(if ok { "t2t_defer_landed" } else { "t2t_defer_write_refused" });
+                crate::runtime::drain::note_store_route(if ok {
+                    "t2t_defer_landed"
+                } else {
+                    "t2t_defer_write_refused"
+                });
                 if !ok {
                     crate::observe::fail(format!(
                         "t2t_defer_lost mapping={} {}x{} reason=write_refused",
@@ -710,7 +821,8 @@ fn land_where<M: HostMemory + HostOps>(
 
 /// TEMP (lab T2T_DEFER): how many frames are owed - the cheap test every landing
 /// point makes before taking the lock.
-pub(crate) static T2T_PENDING_N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub(crate) static T2T_PENDING_N: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 /// TEMP (lab): whether [`copy_resident_into_mapping`] serves whole-plane blits.
 pub(crate) fn lab_t2t_copy_on() -> bool {
@@ -834,7 +946,8 @@ fn store_render_frame_inner<M: HostMemory + HostOps>(
             crate::runtime::drain::note_store_route("render_flush_gpu_declined");
         }
     }
-    if let Some(done) = store_native_frame(state, host, mapping_id, identity, width, height, started)
+    if let Some(done) =
+        store_native_frame(state, host, mapping_id, identity, width, height, started)
     {
         return done;
     }
@@ -1308,7 +1421,14 @@ fn land_changed_pages<M: HostMemory + HostOps>(
         return Some(false);
     }
     drop(lab_span);
-    lab_pay_verify(state, host, mapping_id, identity, base_off, changed.frame_bytes);
+    lab_pay_verify(
+        state,
+        host,
+        mapping_id,
+        identity,
+        base_off,
+        changed.frame_bytes,
+    );
     let lab_span = crate::runtime::chain_phase::CostSpan::new("lab_pd_tail_us"); // TEMP (lab)
     if let Some(m) = state.mappings.get_mut(&mapping_id) {
         m.pay_diff_gen = gen_now.unwrap_or(0);
@@ -1455,11 +1575,24 @@ impl LandJob {
             // No landing thread: copy here, so the job is as done as it would be.
             for (dst, src, n) in spans {
                 // SAFETY: as on the landing thread.
-                unsafe { crate::runtime::mapper::write_guest_bytes_raw(src as *const u8, dst as *mut u8, n) };
+                unsafe {
+                    crate::runtime::mapper::write_guest_bytes_raw(
+                        src as *const u8,
+                        dst as *mut u8,
+                        n,
+                    )
+                };
             }
             done.flag.store(true, std::sync::atomic::Ordering::Release);
         }
-        Self { done, runs, mapped, frame_len, pages, full }
+        Self {
+            done,
+            runs,
+            mapped,
+            frame_len,
+            pages,
+            full,
+        }
     }
 }
 
@@ -1469,7 +1602,10 @@ impl Drop for LandJob {
         if !self.mapped.is_empty() {
             // Abandoned before `complete_landing` (a stale landing): its views stay
             // mapped. Rare, and named so it cannot grow unseen.
-            crate::runtime::drain::note_store_route_n("lab_pay_defer_views_leaked", self.mapped.len() as u64);
+            crate::runtime::drain::note_store_route_n(
+                "lab_pay_defer_views_leaked",
+                self.mapped.len() as u64,
+            );
         }
     }
 }
@@ -1499,13 +1635,16 @@ pub fn begin_render_frame<M: HostMemory + HostOps>(
             .get(&mapping_id)
             .is_some_and(|m| m.scanout_presented)
     {
-        if let Some(d) = begin_changed_pages(state, host, mapping_id, identity, width, height, started)
+        if let Some(d) =
+            begin_changed_pages(state, host, mapping_id, identity, width, height, started)
         {
             crate::runtime::drain::note_store_route("lab_pay_deferred");
             return BeginStore::Deferred(d);
         }
     }
-    BeginStore::Done(store_render_frame(state, host, mapping_id, identity, width, height))
+    BeginStore::Done(store_render_frame(
+        state, host, mapping_id, identity, width, height,
+    ))
 }
 
 /// TEMP (lab PAY_DEFER): the preparation of [`store_changed_pages`] and the
@@ -1694,7 +1833,8 @@ fn begin_landing<M: HostMemory + HostOps>(
     let Some(changed) = changed else {
         return Ok(whole_frame(state, host, d));
     };
-    let Some(vouched) = crate::runtime::mapper::vouch_mapping_pages_verdict(state, host, d.mapping_id).1
+    let Some(vouched) =
+        crate::runtime::mapper::vouch_mapping_pages_verdict(state, host, d.mapping_id).1
     else {
         crate::runtime::drain::note_store_route("lab_pay_defer_vouch_refused");
         return Ok(whole_frame(state, host, d));
@@ -1703,8 +1843,17 @@ fn begin_landing<M: HostMemory + HostOps>(
         return Err(job);
     }
     match land_changed_pages(
-        state, host, d.mapping_id, &d.identity, d.width, d.height, d.base_off, d.gen_now, d.started,
-        changed, vouched,
+        state,
+        host,
+        d.mapping_id,
+        &d.identity,
+        d.width,
+        d.height,
+        d.base_off,
+        d.gen_now,
+        d.started,
+        changed,
+        vouched,
     ) {
         Some(done) => {
             crate::runtime::drain::note_store_route("lab_pay_defer_landed");
@@ -1716,7 +1865,11 @@ fn begin_landing<M: HostMemory + HostOps>(
 
 /// The synchronous payment's last resort: forget the shadow and land the frame
 /// the resident holds now, whole.
-fn whole_frame<M: HostMemory + HostOps>(state: &mut DeviceState, host: &mut M, d: &DeferredStore) -> bool {
+fn whole_frame<M: HostMemory + HostOps>(
+    state: &mut DeviceState,
+    host: &mut M,
+    d: &DeferredStore,
+) -> bool {
     crate::runtime::drain::note_store_route("lab_pay_defer_whole");
     crate::backend::vulkan::engine::page_diff_forget(d.mapping_id);
     store_render_frame(state, host, d.mapping_id, &d.identity, d.width, d.height)
@@ -1768,7 +1921,13 @@ fn start_landing_copy<M: HostMemory + HostOps>(
         // One packed view covers the frame: `copy_mapping_runs`' fast path.
         Some((ptr, _)) => runs
             .iter()
-            .map(|&(lo, hi)| (ptr + lo as usize, src_base + (lo - base_off) as usize, (hi - lo) as usize))
+            .map(|&(lo, hi)| {
+                (
+                    ptr + lo as usize,
+                    src_base + (lo - base_off) as usize,
+                    (hi - lo) as usize,
+                )
+            })
             .collect(),
         // Scattered pages: map only the page runs the selection touches, as
         // `par_land_write` does, and keep them mapped until the copy is in.
@@ -1799,7 +1958,8 @@ fn start_landing_copy<M: HostMemory + HostOps>(
                         let base = match ptr {
                             Some(base) => base,
                             None => {
-                                let Some(base) = host.map_pages(&gpas[pr.clone()], page_size as usize)
+                                let Some(base) =
+                                    host.map_pages(&gpas[pr.clone()], page_size as usize)
                                 else {
                                     for &(p, len) in &mapped {
                                         host.unmap_pages(p, len);
@@ -1857,7 +2017,11 @@ fn complete_landing<M: HostMemory + HostOps>(
     if let Some(m) = state.mappings.get_mut(&mapping_id) {
         m.guest_bytes_seq = m.guest_bytes_seq.wrapping_add(1);
     }
-    crate::runtime::drain::note_store_route(if job.full { "pay_diff_full" } else { "pay_diff_pages" });
+    crate::runtime::drain::note_store_route(if job.full {
+        "pay_diff_full"
+    } else {
+        "pay_diff_pages"
+    });
     crate::runtime::drain::note_store_route_n("pay_diff_pages_landed", job.pages as u64);
     if let Some(m) = state.mappings.get_mut(&mapping_id) {
         m.pay_diff_gen = d.gen_now.unwrap_or(0);
@@ -1874,7 +2038,14 @@ fn complete_landing<M: HostMemory + HostOps>(
             (m.map_generation, d.width, d.height, m.guest_bytes_seq),
         );
     }
-    finish(state, mapping_id, &d.identity, job.frame_len, d.started, false);
+    finish(
+        state,
+        mapping_id,
+        &d.identity,
+        job.frame_len,
+        d.started,
+        false,
+    );
     crate::runtime::drain::note_store_route("lab_pay_defer_landed");
     drop(job);
     true
@@ -1941,8 +2112,9 @@ fn lab_pay_verify<M: HostMemory + HostOps>(
     };
     let len = (frame_bytes as usize).min(bgra.len());
     let mut guest = vec![0u8; len];
-    if !crate::runtime::mapper::read_guest_owned_bytes(state, host, mapping_id, base_off, &mut guest)
-    {
+    if !crate::runtime::mapper::read_guest_owned_bytes(
+        state, host, mapping_id, base_off, &mut guest,
+    ) {
         crate::runtime::drain::note_store_route("pay_verify_unreadable");
         return;
     }
@@ -2028,10 +2200,12 @@ fn finish(
         crate::runtime::drain::DrainPhase::Flush(crate::runtime::drain::FlushRail::Render),
         started,
     );
-    crate::observe::verbose(|| format!(
-        "render_store mapping={mapping_id} bytes={frame_len} us={}",
-        started.elapsed().as_micros()
-    ));
+    crate::observe::verbose(|| {
+        format!(
+            "render_store mapping={mapping_id} bytes={frame_len} us={}",
+            started.elapsed().as_micros()
+        )
+    });
 }
 
 #[cfg(test)]
@@ -2335,15 +2509,16 @@ pub(crate) fn store_gva_frame<M: HostMemory + HostOps>(
     // pass and not the no-op this comment used to claim. Both spellings of that
     // declaration must reach the same answer; `ResidentReadSnapshot::bgra` is
     // where they do, and where they did not.
-    let want_native_layout = crate::protocol::pixel_format::store_texel_order(c0.format)
-        .or_else(|| {
+    let want_native_layout =
+        crate::protocol::pixel_format::store_texel_order(c0.format).or_else(|| {
             crate::backend::vulkan::translate::pixel::sampled_pixels(c0.format)
                 .ok()
                 .map(|(layout, _, _)| layout)
                 .filter(|layout| !layout.is_four_byte_color())
         });
-    let readback = crate::backend::vulkan::engine::read_target_keeping(identity, want_native_layout)
-        .map_err(|inner| GvaWritebackDecline::CopiedReadRefused { inner })?;
+    let readback =
+        crate::backend::vulkan::engine::read_target_keeping(identity, want_native_layout)
+            .map_err(|inner| GvaWritebackDecline::CopiedReadRefused { inner })?;
     // Two ways to land a frame, and which one is decided by what the readback
     // actually holds rather than by what this rail wishes it held.
     //
@@ -2355,7 +2530,7 @@ pub(crate) fn store_gva_frame<M: HostMemory + HostOps>(
     // guest-RAM import serves it instead of losing every frame of it.
     let extent = match readback {
         crate::backend::vulkan::engine::TargetRead::Native(pixels, layout) => {
-            if crate::protocol::pixel_format::store_texel_order(c0.format) != Some(layout) {
+            if want_native_layout != Some(layout) {
                 return Err(GvaWritebackDecline::FormatNeedsConversion { format: c0.format });
             }
             crate::runtime::drain::note_store_route("gva_flush_copied_native");
@@ -2373,8 +2548,10 @@ pub(crate) fn store_gva_frame<M: HostMemory + HostOps>(
         crate::backend::vulkan::engine::TargetRead::Narrowed(rb) => {
             match rb.texel.native_layout() {
                 Some(layout) => {
-                    if crate::protocol::pixel_format::store_texel_order(c0.format) != Some(layout) {
-                        return Err(GvaWritebackDecline::FormatNeedsConversion { format: c0.format });
+                    if want_native_layout != Some(layout) {
+                        return Err(GvaWritebackDecline::FormatNeedsConversion {
+                            format: c0.format,
+                        });
                     }
                     crate::runtime::drain::note_store_route("gva_flush_copied_native");
                     land_gva_frame_bytes(
@@ -2390,7 +2567,9 @@ pub(crate) fn store_gva_frame<M: HostMemory + HostOps>(
                 }
                 None => {
                     let Some(rgba) = rb.into_rgba8() else {
-                        return Err(GvaWritebackDecline::FormatNeedsConversion { format: c0.format });
+                        return Err(GvaWritebackDecline::FormatNeedsConversion {
+                            format: c0.format,
+                        });
                     };
                     land_gva_frame_bytes(
                         state,
@@ -2503,7 +2682,12 @@ fn land_gva_frame_bytes<M: HostMemory + HostOps>(
     .map_err(|err| GvaWritebackDecline::CopiedWriteRefused { err })?;
     crate::runtime::surface_cache::forget_gva_copies(state, task_id, c0.target_gva, texture_ref);
     if c0.texture_ref != 0 && c0.texture_ref != texture_ref {
-        crate::runtime::surface_cache::forget_gva_copies(state, task_id, c0.target_gva, c0.texture_ref);
+        crate::runtime::surface_cache::forget_gva_copies(
+            state,
+            task_id,
+            c0.target_gva,
+            c0.texture_ref,
+        );
     }
     Ok(extent)
 }
@@ -2852,9 +3036,8 @@ mod gva_multisample_decline_tests {
     /// resident is the only copy of its attachment.
     #[test]
     fn only_a_multisample_resident_is_kept_by_a_lost_payment() {
-        let multisample = DrawError::TargetRead(TargetReadDecline::MultisampleImage {
-            sample_count: 4,
-        });
+        let multisample =
+            DrawError::TargetRead(TargetReadDecline::MultisampleImage { sample_count: 4 });
         assert!(GvaWritebackDecline::CopiedReadRefused {
             inner: multisample.clone()
         }

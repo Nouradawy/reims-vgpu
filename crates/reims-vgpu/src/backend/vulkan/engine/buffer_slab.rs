@@ -623,7 +623,9 @@ impl BufferSlabPool {
             None => return false,
         };
         let other = self.blocks.iter().enumerate().find_map(|(i, s)| match s {
-            Some(b) if i != idx && b.dedicated && !b.poisoned && b.plan.is_empty() => Some((i, size(b))),
+            Some(b) if i != idx && b.dedicated && !b.poisoned && b.plan.is_empty() => {
+                Some((i, size(b)))
+            }
             _ => None,
         });
         match other {

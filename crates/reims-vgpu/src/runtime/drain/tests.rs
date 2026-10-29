@@ -629,9 +629,16 @@ fn a_replace_physical_keeps_the_resident_identity_of_a_declared_surface() {
 
     crate::runtime::objects::replace_physical(&mut state, &mut host, 0, 7);
     let m = state.mappings.get(&7).unwrap();
-    assert_ne!(m.map_generation, plan_before, "the page plan's generation still moves");
+    assert_ne!(
+        m.map_generation, plan_before,
+        "the page plan's generation still moves"
+    );
     assert!(m.repoint_keep, "the carry waits for the re-pointed list");
-    assert_eq!(surface_identity(&state, 7, 64, 32), before, "the resident survives the drop");
+    assert_eq!(
+        surface_identity(&state, 7, 64, 32),
+        before,
+        "the resident survives the drop"
+    );
 
     // The adoption of the new list bumps again (a changed plan) and ends the carry.
     {
@@ -640,7 +647,11 @@ fn a_replace_physical_keeps_the_resident_identity_of_a_declared_surface() {
         m.page_entries = vec![0x44, 0x55, 0x66];
         m.repoint_keep = false;
     }
-    assert_eq!(surface_identity(&state, 7, 64, 32), before, "and the adoption");
+    assert_eq!(
+        surface_identity(&state, 7, 64, 32),
+        before,
+        "and the adoption"
+    );
 
     // Past the carry an unmap is new content: the identity follows the plan again.
     assert!(state.unmap_surface(7));
@@ -6100,7 +6111,11 @@ fn a_packet_whose_stamp_wait_is_unmet_is_parked_until_the_slot_reaches_it() {
     // the parked packet, invent a completion, or lose it.
     drain_main_fifo(&mut state, &mut host);
     assert_eq!(read_slot(&host, 0), 0, "still nothing ran");
-    assert_eq!(state.parked.lock().len(), 1, "and the position is still held");
+    assert_eq!(
+        state.parked.lock().len(),
+        1,
+        "and the position is still held"
+    );
 
     // Another timeline publishes the awaited stamp.
     gpa_map::write_u32(&mut host, slot_gpa(AWAITED_SLOT), AWAITED_VALUE, page_size)
@@ -7908,7 +7923,8 @@ fn owing_a_word_is_not_publishing_it_and_only_the_landing_moves_the_plane() {
     super::note_stamp_no_longer_owed(&mut state, 0, 7);
     assert_eq!(
         state
-            .stamp_ledger.lock()
+            .stamp_ledger
+            .lock()
             .classify(super::StampWait { index: 0, value: 7 }),
         super::UnmetSource::Queued,
         "the device's ledger has it: `Queued` is its name for a word that has \
@@ -8175,7 +8191,11 @@ fn a_settle_pass_over_waiting_positions_does_not_allocate() {
     for _ in 0..3 {
         settle_model_work(&mut state, &mut host);
     }
-    assert_eq!(state.parked.lock().len(), 3, "nothing here can release them");
+    assert_eq!(
+        state.parked.lock().len(),
+        3,
+        "nothing here can release them"
+    );
     assert_ne!(state.pending.child_mask & 0b10, 0, "domain 1 is still owed");
     assert_ne!(
         state.pending.child_mask & 0b100,
@@ -8223,16 +8243,22 @@ fn test_iosurface_packets_dispatch_in_drain() {
         total_alloc_size: 4096,
         plane_count: 1,
         seed: 1,
-        planes: [reims_vgpu_protocol::iosurface_events::ReimsIosurfPlaneDesc {
-            width: 64,
-            height: 16,
-            bytes_per_row: 256,
-            bytes_per_element: 4,
-            plane_offset: 0,
-            plane_size: 4096,
-        }, Default::default(), Default::default(), Default::default()],
+        planes: [
+            reims_vgpu_protocol::iosurface_events::ReimsIosurfPlaneDesc {
+                width: 64,
+                height: 16,
+                bytes_per_row: 256,
+                bytes_per_element: 4,
+                plane_offset: 0,
+                plane_size: 4096,
+            },
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        ],
     };
-    let mut create_payload = vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfCreate::TOTAL_LEN];
+    let mut create_payload =
+        vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfCreate::TOTAL_LEN];
     assert!(create_msg.encode(&mut create_payload));
 
     let packet_create = Packet {
@@ -8269,7 +8295,8 @@ fn test_iosurface_packets_dispatch_in_drain() {
         seed: 1,
         reserved: 0,
     };
-    let mut lock_payload = vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfLock::LEN];
+    let mut lock_payload =
+        vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfLock::LEN];
     assert!(lock_msg.encode(&mut lock_payload));
     let packet_lock = Packet {
         opcode: CHILD_OP_IOSURF_LOCK,
@@ -8294,7 +8321,8 @@ fn test_iosurface_packets_dispatch_in_drain() {
         dirty_width: 10,
         dirty_height: 10,
     };
-    let mut unlock_payload = vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfUnlock::LEN];
+    let mut unlock_payload =
+        vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfUnlock::LEN];
     assert!(unlock_msg.encode(&mut unlock_payload));
     let packet_unlock = Packet {
         opcode: CHILD_OP_IOSURF_UNLOCK,
@@ -8318,7 +8346,8 @@ fn test_iosurface_packets_dispatch_in_drain() {
         plane: 0,
         sequence: 777,
     };
-    let mut readback_payload = vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfReadbackReq::LEN];
+    let mut readback_payload =
+        vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfReadbackReq::LEN];
     assert!(readback_msg.encode(&mut readback_payload));
     let packet_readback = Packet {
         opcode: CHILD_OP_IOSURF_READBACK_REQ,
@@ -8340,7 +8369,8 @@ fn test_iosurface_packets_dispatch_in_drain() {
         status: 0,
         reserved: 0,
     };
-    let mut done_payload = vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfReadbackDone::LEN];
+    let mut done_payload =
+        vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfReadbackDone::LEN];
     assert!(done_msg.encode(&mut done_payload));
     let packet_done = Packet {
         opcode: CHILD_OP_IOSURF_READBACK_DONE,
@@ -8361,7 +8391,8 @@ fn test_iosurface_packets_dispatch_in_drain() {
         delta: 1,
         reserved: 0,
     };
-    let mut usecount_payload = vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfUsecount::LEN];
+    let mut usecount_payload =
+        vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfUsecount::LEN];
     assert!(usecount_msg.encode(&mut usecount_payload));
     let packet_usecount = Packet {
         opcode: CHILD_OP_IOSURF_USECOUNT,
@@ -8387,7 +8418,8 @@ fn test_iosurface_packets_dispatch_in_drain() {
         surface_id: sid,
         reserved: 0,
     };
-    let mut destroy_payload = vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfDestroy::LEN];
+    let mut destroy_payload =
+        vec![0u8; reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfDestroy::LEN];
     assert!(destroy_msg.encode(&mut destroy_payload));
     let packet_destroy = Packet {
         opcode: CHILD_OP_IOSURF_DESTROY,
@@ -8410,4 +8442,3 @@ fn test_iosurface_packets_dispatch_in_drain() {
         None => unsafe { std::env::remove_var("REIMS_VGPU_LAB_IOSURFACE_REGISTRY_SHADOW") },
     }
 }
-

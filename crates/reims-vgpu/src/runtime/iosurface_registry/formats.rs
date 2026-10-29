@@ -340,33 +340,16 @@ pub fn resolve_format_with_capabilities(
     }
 }
 
-/// Convert IEEE 754 32-bit float to 16-bit half-float.
-pub fn f32_to_f16(val: f32) -> u16 {
-    let bits = val.to_bits();
-    let sign = (bits >> 16) & 0x8000;
-    let exp = ((bits >> 23) & 0xff) as i32;
-    let frac = bits & 0x7f_ffff;
-
-    if exp == 0xff {
-        return (sign | 0x7c00 | if frac != 0 { (frac >> 13).max(1) } else { 0 }) as u16;
-    }
-    let new_exp = exp - 127 + 15;
-    if new_exp >= 31 {
-        return (sign | 0x7c00) as u16;
-    }
-    if new_exp <= 0 {
-        if new_exp < -10 {
-            return sign as u16;
-        }
-        let frac = frac | 0x80_0000;
-        let shift = 14 - new_exp;
-        return (sign | (frac >> shift)) as u16;
-    }
-    (sign | ((new_exp as u32) << 10) | (frac >> 13)) as u16
-}
+// Native clear publication and IOSurface conversion share the same binary16
+// encoder, including rounding and special-value handling.
+pub use crate::protocol::pixel_format::f32_to_f16;
 
 /// Unpack Apple BGRA10_XR (64 bpp: 16-bit per component, reference 1.0 = 512) into RGBA16Float (8 bytes/texel).
-pub fn unpack_bgra10_xr_to_rgba16f(src: &[u8], dst: &mut [u8], pixel_count: usize) -> Result<(), &'static str> {
+pub fn unpack_bgra10_xr_to_rgba16f(
+    src: &[u8],
+    dst: &mut [u8],
+    pixel_count: usize,
+) -> Result<(), &'static str> {
     if src.len() < pixel_count * 8 {
         return Err("src too short for BGRA10_XR");
     }
@@ -433,10 +416,26 @@ mod tests {
     #[test]
     fn format_table_block_invariants() {
         for desc in FORMAT_TABLE {
-            assert!(desc.block_width >= 1, "invalid block width for {}", desc.name);
-            assert!(desc.block_height >= 1, "invalid block height for {}", desc.name);
-            assert!(desc.bytes_per_block >= 1, "invalid bytes per block for {}", desc.name);
-            assert!(desc.component_count >= 1 && desc.component_count <= 4, "invalid components for {}", desc.name);
+            assert!(
+                desc.block_width >= 1,
+                "invalid block width for {}",
+                desc.name
+            );
+            assert!(
+                desc.block_height >= 1,
+                "invalid block height for {}",
+                desc.name
+            );
+            assert!(
+                desc.bytes_per_block >= 1,
+                "invalid bytes per block for {}",
+                desc.name
+            );
+            assert!(
+                desc.component_count >= 1 && desc.component_count <= 4,
+                "invalid components for {}",
+                desc.name
+            );
         }
     }
 

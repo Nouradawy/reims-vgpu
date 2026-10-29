@@ -502,7 +502,14 @@ fn narrow_to_window<M: HostOps>(
         return SurfaceCurrency::WroteUnknown;
     }
     if ranges_touch_window(&ranges, base_off, span_end) {
-        lab_note_wrote_pixels(mapping_id, width, height, &pages, &ranges, span_end - base_off);
+        lab_note_wrote_pixels(
+            mapping_id,
+            width,
+            height,
+            &pages,
+            &ranges,
+            span_end - base_off,
+        );
         SurfaceCurrency::WrotePixels(GuestOwned { ranges, seen })
     } else {
         SurfaceCurrency::WroteElsewhere

@@ -304,7 +304,9 @@ fn gather_marks(request: &SampledSourceRequest) -> Option<GatherMarks> {
         SampledSourceRequest::GuestRuns(_, _, _, _, identity, vouch, evidence, _) => {
             Some((*identity, *vouch, *evidence))
         }
-        SampledSourceRequest::Staged(staged) => Some((staged.identity, staged.vouch, staged.evidence)),
+        SampledSourceRequest::Staged(staged) => {
+            Some((staged.identity, staged.vouch, staged.evidence))
+        }
         _ => None,
     }
 }
@@ -441,7 +443,14 @@ pub(crate) struct PreparedDraw {
 }
 
 impl PrepareLog {
-    pub(super) fn note_sampled(&mut self, texture_ref: u32, rw: u32, rh: u32, mid: u32, route: &'static str) {
+    pub(super) fn note_sampled(
+        &mut self,
+        texture_ref: u32,
+        rw: u32,
+        rh: u32,
+        mid: u32,
+        route: &'static str,
+    ) {
         self.notes.push(SampledNote {
             texture_ref,
             rw,
@@ -558,7 +567,9 @@ fn cpu_read_worker<M: HostMemory + HostOps>(
         return Err(Bail::BufferRead);
     }
     // TEMP (lab, DRAW_PAR v15): into this worker's arena, when it has one.
-    if let Some(slice) = JOB_STAGER.with(|s| s.borrow().as_ref().and_then(|st| st.stage_bytes(&buf))) {
+    if let Some(slice) =
+        JOB_STAGER.with(|s| s.borrow().as_ref().and_then(|st| st.stage_bytes(&buf)))
+    {
         crate::runtime::drain::note_store_route("draw_par_staged_bind");
         return Ok(crate::backend::vulkan::engine::BufferContent::Staged(slice));
     }
@@ -729,7 +740,9 @@ pub(super) fn load_buffer_content_worker<M: HostMemory + HostOps>(
         // a walked window) rather than reading.
         return Err(Bail::BufferAboveFloor);
     }
-    cpu_read_worker(state, host, task_id, buffer_ref, &backing, offset, extent_cap)
+    cpu_read_worker(
+        state, host, task_id, buffer_ref, &backing, offset, extent_cap,
+    )
 }
 
 /// The worker's [`super::load_index_content_reason`].
@@ -941,9 +954,12 @@ fn resolve_linear_worker<M: HostMemory + HostOps>(
         _ => return Err(Bail::LinearShape),
     };
     let declared_format = tex.declared_pixel_format().ok_or(Bail::LinearShape)?;
-    let sample_fmt = crate::runtime::draw::texture_view::effective_view_sample_format(declared_format, None)
+    let sample_fmt =
+        crate::runtime::draw::texture_view::effective_view_sample_format(declared_format, None)
+            .ok_or(Bail::LinearShape)?;
+    let (gva, layout) = tex
+        .level_gva(0, state.page_shift)
         .ok_or(Bail::LinearShape)?;
-    let (gva, layout) = tex.level_gva(0, state.page_shift).ok_or(Bail::LinearShape)?;
     let (w, h) = (layout.width, layout.height);
     if w == 0 || h == 0 {
         return Err(Bail::LinearShape);
@@ -954,7 +970,8 @@ fn resolve_linear_worker<M: HostMemory + HostOps>(
     if bpr < tight {
         return Err(Bail::LinearShape);
     }
-    let storage_rows = pixel_format::tight_row_count(h, declared_format).ok_or(Bail::LinearShape)?;
+    let storage_rows =
+        pixel_format::tight_row_count(h, declared_format).ok_or(Bail::LinearShape)?;
     let span = bpr
         .checked_mul(u64::from(storage_rows))
         .and_then(|s| s.checked_mul(u64::from(planes)))
@@ -977,10 +994,12 @@ fn resolve_linear_worker<M: HostMemory + HostOps>(
         Some(crate::runtime::bound_buffers::PackedBufferResolution::Available(_)) => {
             return Err(Bail::LinearPacked);
         }
-        Some(crate::runtime::bound_buffers::PackedBufferResolution::Unavailable { gva: g, size: sz })
-            if tex.allocation_size != 0
-                && tex.allocation_base_gva(state.page_shift) == Some(*g)
-                && *sz == tex.allocation_size => {}
+        Some(crate::runtime::bound_buffers::PackedBufferResolution::Unavailable {
+            gva: g,
+            size: sz,
+        }) if tex.allocation_size != 0
+            && tex.allocation_base_gva(state.page_shift) == Some(*g)
+            && *sz == tex.allocation_size => {}
         _ => {
             if let Ok((native, _, _)) = translate::pixel::sampled_pixels(declared_format) {
                 if sampled_gather_floor_pure(native, span) {
@@ -991,8 +1010,15 @@ fn resolve_linear_worker<M: HostMemory + HostOps>(
     }
     guest_bytes_readable(state, host, task_id, texture_ref, gva, span)?;
     let mut scratch = vec![0u8; native_len];
-    if gva_mem::read_task_gva_by_id(host, &state.tasks, task_id, gva, &mut scratch, state.page_shift)
-        .is_err()
+    if gva_mem::read_task_gva_by_id(
+        host,
+        &state.tasks,
+        task_id,
+        gva,
+        &mut scratch,
+        state.page_shift,
+    )
+    .is_err()
     {
         return Err(Bail::BufferRead);
     }
@@ -1362,7 +1388,10 @@ impl CommitLaps {
     fn lap(&mut self, name: &'static str) {
         if let Some(last) = self.0.as_mut() {
             let now = crate::lab_clock::LabInstant::now();
-            crate::runtime::drain::note_store_route_n(name, now.duration_since(*last).as_nanos() as u64);
+            crate::runtime::drain::note_store_route_n(
+                name,
+                now.duration_since(*last).as_nanos() as u64,
+            );
             *last = now;
         }
     }
@@ -1463,13 +1492,24 @@ pub(crate) fn commit_shared<M: HostMemory + HostOps>(
     owed.linear.append(&mut log.linear);
     for n in &log.notes {
         note_sampled_ref_backing(state, task_id, n.texture_ref, n.rw, n.rh, n.mid, n.route);
-        crate::runtime::scanout::note_sampled_surface_field(state, host, n.mid, n.texture_ref, n.route);
+        crate::runtime::scanout::note_sampled_surface_field(
+            state,
+            host,
+            n.mid,
+            n.texture_ref,
+            n.route,
+        );
     }
     if let Some(note) = log.hang.take() {
         crate::runtime::gpu_hang_trail::note_draw(note);
     }
     laps.lap("commit_ns_notes");
-    let PreparedRequest { resources, meta, chain_identity, kind: _ } = done;
+    let PreparedRequest {
+        resources,
+        meta,
+        chain_identity,
+        kind: _,
+    } = done;
     let mut resources = resources.into_inner();
     pass_stage::arm_seed_stage(&mut resources);
     crate::backend::vulkan::engine::submit_deferred_draw(state, resources, meta);
@@ -1561,7 +1601,15 @@ pub(crate) fn run_region<M, S>(
 ) -> RegionStop
 where
     M: HostMemory + HostOps,
-    S: FnMut(&DeviceState, &mut M, usize, &DrawEncodeRequest, &bool, PreparedDraw, &mut RegionOwed) -> RegionStep,
+    S: FnMut(
+        &DeviceState,
+        &mut M,
+        usize,
+        &DrawEncodeRequest,
+        &bool,
+        PreparedDraw,
+        &mut RegionOwed,
+    ) -> RegionStep,
 {
     let nc = carried.len().min(reqs.len());
     let jobs = &reqs[nc..];
@@ -1665,7 +1713,15 @@ pub(crate) fn run_region_g<M, S>(
 ) -> RegionStop
 where
     M: HostMemory + HostOps,
-    S: FnMut(&DeviceState, &mut M, usize, &DrawEncodeRequest, &bool, PreparedDraw, &mut RegionOwed) -> RegionStep,
+    S: FnMut(
+        &DeviceState,
+        &mut M,
+        usize,
+        &DrawEncodeRequest,
+        &bool,
+        PreparedDraw,
+        &mut RegionOwed,
+    ) -> RegionStep,
 {
     let reqs = &all[from..];
     if !g.has_frame() {
@@ -1774,7 +1830,9 @@ pub(crate) struct AheadDraws {
 
 impl std::fmt::Debug for AheadDraws {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AheadDraws").field("records", &self.prepared.len()).finish_non_exhaustive()
+        f.debug_struct("AheadDraws")
+            .field("records", &self.prepared.len())
+            .finish_non_exhaustive()
     }
 }
 

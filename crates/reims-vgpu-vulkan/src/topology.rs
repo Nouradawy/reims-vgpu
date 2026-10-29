@@ -284,7 +284,11 @@ mod tests {
                 assert_eq!(plan.primitive_restart_enable, guest.is_strip(), "{guest:?}");
                 assert_eq!(
                     plan.native().primitive_restart_enable,
-                    if guest.is_strip() { vk::TRUE } else { vk::FALSE },
+                    if guest.is_strip() {
+                        vk::TRUE
+                    } else {
+                        vk::FALSE
+                    },
                     "{guest:?}"
                 );
                 if guest.is_strip() {

@@ -75,10 +75,8 @@ pub fn compute_upload_plan(
             let clamped_w = dw.min(plane_w.saturating_sub(clamped_x));
             let clamped_h = dh.min(plane_h.saturating_sub(clamped_y));
 
-            let is_full = clamped_x == 0
-                && clamped_y == 0
-                && clamped_w == plane_w
-                && clamped_h == plane_h;
+            let is_full =
+                clamped_x == 0 && clamped_y == 0 && clamped_w == plane_w && clamped_h == plane_h;
 
             (
                 UploadRegion {
@@ -136,18 +134,28 @@ pub fn repack_strided_rows(
     if width == 0 || height == 0 || bpe == 0 {
         return Ok(());
     }
-    let tight_row_bytes = width.checked_mul(bpe).ok_or("repack: tight_row_bytes overflow")?;
-    let required_dst = tight_row_bytes.checked_mul(height).ok_or("repack: dst overflow")?;
+    let tight_row_bytes = width
+        .checked_mul(bpe)
+        .ok_or("repack: tight_row_bytes overflow")?;
+    let required_dst = tight_row_bytes
+        .checked_mul(height)
+        .ok_or("repack: dst overflow")?;
     if dst.len() < required_dst {
         return Err("repack: dst buffer too small");
     }
     for row in 0..height {
-        let src_off = row.checked_mul(src_stride).ok_or("repack: src_off overflow")?;
-        let src_end = src_off.checked_add(tight_row_bytes).ok_or("repack: src_end overflow")?;
+        let src_off = row
+            .checked_mul(src_stride)
+            .ok_or("repack: src_off overflow")?;
+        let src_end = src_off
+            .checked_add(tight_row_bytes)
+            .ok_or("repack: src_end overflow")?;
         if src.len() < src_end {
             return Err("repack: src buffer too small for row");
         }
-        let dst_off = row.checked_mul(tight_row_bytes).ok_or("repack: dst_off overflow")?;
+        let dst_off = row
+            .checked_mul(tight_row_bytes)
+            .ok_or("repack: dst_off overflow")?;
         dst[dst_off..dst_off + tight_row_bytes].copy_from_slice(&src[src_off..src_end]);
     }
     Ok(())
@@ -261,7 +269,12 @@ mod tests {
                 assert_eq!(plan.region.width, 100);
                 assert_eq!(plan.region.height, 100);
                 assert!(!plan.is_partial);
-                assert_eq!(plan.stride_mode, StrideMode::Direct { buffer_row_length: 100 });
+                assert_eq!(
+                    plan.stride_mode,
+                    StrideMode::Direct {
+                        buffer_row_length: 100
+                    }
+                );
             }
             _ => panic!("expected execute"),
         }
@@ -320,7 +333,12 @@ mod tests {
         let decision = compute_upload_plan(&desc, 1, None, None);
         match decision {
             UploadDecision::Execute(plan) => {
-                assert_eq!(plan.stride_mode, StrideMode::Direct { buffer_row_length: 64 });
+                assert_eq!(
+                    plan.stride_mode,
+                    StrideMode::Direct {
+                        buffer_row_length: 64
+                    }
+                );
             }
             _ => panic!("expected execute"),
         }
@@ -333,7 +351,12 @@ mod tests {
         let decision = compute_upload_plan(&desc_64, 1, None, None);
         match decision {
             UploadDecision::Execute(plan) => {
-                assert_eq!(plan.stride_mode, StrideMode::Direct { buffer_row_length: 64 });
+                assert_eq!(
+                    plan.stride_mode,
+                    StrideMode::Direct {
+                        buffer_row_length: 64
+                    }
+                );
             }
             _ => panic!("expected execute"),
         }
@@ -343,7 +366,12 @@ mod tests {
         let decision = compute_upload_plan(&desc_256, 1, None, None);
         match decision {
             UploadDecision::Execute(plan) => {
-                assert_eq!(plan.stride_mode, StrideMode::Direct { buffer_row_length: 128 });
+                assert_eq!(
+                    plan.stride_mode,
+                    StrideMode::Direct {
+                        buffer_row_length: 128
+                    }
+                );
             }
             _ => panic!("expected execute"),
         }
@@ -382,16 +410,29 @@ mod tests {
         // Row 0
         src[0..16].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
         // Row 1
-        src[24..40].copy_from_slice(&[21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]);
+        src[24..40].copy_from_slice(&[
+            21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36,
+        ]);
         // Row 2
-        src[48..64].copy_from_slice(&[41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56]);
+        src[48..64].copy_from_slice(&[
+            41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56,
+        ]);
 
         let mut dst = vec![0u8; 16 * 3];
         assert_eq!(repack_strided_rows(&src, &mut dst, 4, 3, 24, 4), Ok(()));
 
-        assert_eq!(&dst[0..16], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
-        assert_eq!(&dst[16..32], &[21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]);
-        assert_eq!(&dst[32..48], &[41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56]);
+        assert_eq!(
+            &dst[0..16],
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        );
+        assert_eq!(
+            &dst[16..32],
+            &[21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]
+        );
+        assert_eq!(
+            &dst[32..48],
+            &[41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56]
+        );
     }
 
     #[test]
@@ -400,25 +441,101 @@ mod tests {
             .expect("should produce plan when enabled with blit support");
 
         assert_eq!(plan.level_count, 7);
-        assert_eq!(plan.levels[0], MipLevelExtent { level: 0, width: 64, height: 64 });
-        assert_eq!(plan.levels[1], MipLevelExtent { level: 1, width: 32, height: 32 });
-        assert_eq!(plan.levels[2], MipLevelExtent { level: 2, width: 16, height: 16 });
-        assert_eq!(plan.levels[3], MipLevelExtent { level: 3, width: 8, height: 8 });
-        assert_eq!(plan.levels[4], MipLevelExtent { level: 4, width: 4, height: 4 });
-        assert_eq!(plan.levels[5], MipLevelExtent { level: 5, width: 2, height: 2 });
-        assert_eq!(plan.levels[6], MipLevelExtent { level: 6, width: 1, height: 1 });
+        assert_eq!(
+            plan.levels[0],
+            MipLevelExtent {
+                level: 0,
+                width: 64,
+                height: 64
+            }
+        );
+        assert_eq!(
+            plan.levels[1],
+            MipLevelExtent {
+                level: 1,
+                width: 32,
+                height: 32
+            }
+        );
+        assert_eq!(
+            plan.levels[2],
+            MipLevelExtent {
+                level: 2,
+                width: 16,
+                height: 16
+            }
+        );
+        assert_eq!(
+            plan.levels[3],
+            MipLevelExtent {
+                level: 3,
+                width: 8,
+                height: 8
+            }
+        );
+        assert_eq!(
+            plan.levels[4],
+            MipLevelExtent {
+                level: 4,
+                width: 4,
+                height: 4
+            }
+        );
+        assert_eq!(
+            plan.levels[5],
+            MipLevelExtent {
+                level: 5,
+                width: 2,
+                height: 2
+            }
+        );
+        assert_eq!(
+            plan.levels[6],
+            MipLevelExtent {
+                level: 6,
+                width: 1,
+                height: 1
+            }
+        );
     }
 
     #[test]
     fn mip_generation_planning_non_square() {
-        let plan = plan_mip_generation(64, 16, 4, true, true)
-            .expect("should produce 4 levels");
+        let plan = plan_mip_generation(64, 16, 4, true, true).expect("should produce 4 levels");
 
         assert_eq!(plan.level_count, 4);
-        assert_eq!(plan.levels[0], MipLevelExtent { level: 0, width: 64, height: 16 });
-        assert_eq!(plan.levels[1], MipLevelExtent { level: 1, width: 32, height: 8 });
-        assert_eq!(plan.levels[2], MipLevelExtent { level: 2, width: 16, height: 4 });
-        assert_eq!(plan.levels[3], MipLevelExtent { level: 3, width: 8, height: 2 });
+        assert_eq!(
+            plan.levels[0],
+            MipLevelExtent {
+                level: 0,
+                width: 64,
+                height: 16
+            }
+        );
+        assert_eq!(
+            plan.levels[1],
+            MipLevelExtent {
+                level: 1,
+                width: 32,
+                height: 8
+            }
+        );
+        assert_eq!(
+            plan.levels[2],
+            MipLevelExtent {
+                level: 2,
+                width: 16,
+                height: 4
+            }
+        );
+        assert_eq!(
+            plan.levels[3],
+            MipLevelExtent {
+                level: 3,
+                width: 8,
+                height: 2
+            }
+        );
     }
 
     #[test]

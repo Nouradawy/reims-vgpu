@@ -4,8 +4,8 @@
 //! Covers Phase 5.1: relaxed sampled-size vs render-target size equality checks for sampling,
 //! sub-rect alias validation, and persistent alias synchronization.
 
-use std::collections::HashMap;
 use super::census;
+use std::collections::HashMap;
 
 /// Key uniquely identifying an offset or sub-rect view alias over an IOSurface plane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -122,7 +122,8 @@ impl ViewCache {
 
     /// Invalidate all aliases associated with a specific surface and plane.
     pub fn invalidate_plane(&mut self, surface_id: u32, plane_index: u32) {
-        self.aliases.retain(|k, _| !(k.surface_id == surface_id && k.plane_index == plane_index));
+        self.aliases
+            .retain(|k, _| !(k.surface_id == surface_id && k.plane_index == plane_index));
     }
 
     /// Count of tracked alias images.

@@ -80,7 +80,10 @@ pub(super) fn lab_prep_resolve() -> bool {
     }
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        let on = matches!(std::env::var("REIMS_VGPU_LAB_PREP_RESOLVE").as_deref(), Ok("on"));
+        let on = matches!(
+            std::env::var("REIMS_VGPU_LAB_PREP_RESOLVE").as_deref(),
+            Ok("on")
+        );
         crate::observe::off(format!("lab_prep_resolve on={}", u8::from(on)));
         on
     })
@@ -799,11 +802,15 @@ impl<'a> PassPrep<'a> {
                             bind.texture_ref,
                         ) {
                             Ok(resource) => {
-                                crate::runtime::drain::note_store_route("pass_prep_resolved_unretained");
+                                crate::runtime::drain::note_store_route(
+                                    "pass_prep_resolved_unretained",
+                                );
                                 resource
                             }
                             Err(_) => {
-                                crate::runtime::drain::note_store_route("pass_prep_unretained_unresolved");
+                                crate::runtime::drain::note_store_route(
+                                    "pass_prep_unretained_unresolved",
+                                );
                                 continue;
                             }
                         }

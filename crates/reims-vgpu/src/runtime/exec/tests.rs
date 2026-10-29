@@ -464,7 +464,9 @@ fn event_segment_signal_wait_in_stream() {
     let mut host = FakeHost::new();
     let mut out = ExecResult::default();
     let mut acc = StreamAccum::default();
-    walk_stream(&mut state, &mut host, 1, &stream, &mut out, &mut acc, None, None);
+    walk_stream(
+        &mut state, &mut host, 1, &stream, &mut out, &mut acc, None, None,
+    );
 
     // The signal landed, and the pending wait for 8 left it alone. The
     // three per-op counters this used to assert had no product reader; the
@@ -516,7 +518,9 @@ fn a_bounded_event_wait_is_refused_by_contract_and_leaves_the_generation_alone()
     let mut out = ExecResult::default();
     let mut acc = StreamAccum::default();
     let cap = crate::observe::FailCapture::start();
-    walk_stream(&mut state, &mut host, 1, &stream, &mut out, &mut acc, None, None);
+    walk_stream(
+        &mut state, &mut host, 1, &stream, &mut out, &mut acc, None, None,
+    );
     let lines = cap.lines();
 
     assert!(
@@ -5492,7 +5496,9 @@ fn a_render_encoder_fence_reaches_the_render_fence_domain() {
     let mut host = FakeHost::new();
     let mut out = ExecResult::default();
     let mut acc = StreamAccum::default();
-    walk_stream(&mut state, &mut host, 1, &stream, &mut out, &mut acc, None, None);
+    walk_stream(
+        &mut state, &mut host, 1, &stream, &mut out, &mut acc, None, None,
+    );
 
     // Two updates: the first seeds the generation, the second advances it. A
     // dropped fence leaves `None` here, which is what this used to read.
@@ -8606,7 +8612,11 @@ fn a_batches_second_command_buffer_answers_from_the_firsts_resolution() {
                     u64::from(xmemo),
                     "xmemo {xmemo}: only the batch's map answers the second CB's first bind"
                 );
-                assert_eq!(misses() - m1, 0, "xmemo {xmemo}: no miss after the batch answered");
+                assert_eq!(
+                    misses() - m1,
+                    0,
+                    "xmemo {xmemo}: no miss after the batch answered"
+                );
             });
         });
     }
@@ -8642,7 +8652,11 @@ fn a_names_bump_retires_the_batchs_answers() {
                 store_route_count("walk_xmemo_miss"),
             );
             handle_render_record(&mut state, &host, 1, op, &bind, &mut out, &mut second);
-            assert_eq!(h1, store_route_count("walk_xmemo_hit"), "the bump retired the answer");
+            assert_eq!(
+                h1,
+                store_route_count("walk_xmemo_hit"),
+                "the bump retired the answer"
+            );
             assert_eq!(
                 m1 + 1,
                 store_route_count("walk_xmemo_miss"),
@@ -8716,7 +8730,9 @@ fn the_admission_memos_answers_die_with_their_guards() {
     let bind = set_vertex_buffer_7();
     // One bind declares the object, so a real name exists to memoize.
     handle_render_record(&mut state, &host, 1, op, &bind, &mut out, &mut acc);
-    let name = state.object_name(1, 7).expect("the buffer is named once resolved");
+    let name = state
+        .object_name(1, 7)
+        .expect("the buffer is named once resolved");
     walk_memo::with_walk_xmemo(true, || {
         let session = state.session_generation();
         walk_memo::xmemo_name_keep(&state, session, 1, 7, name);
@@ -9059,7 +9075,10 @@ fn pass_prep_on_and_off_report_the_same_counters() {
         host.map_range(root_gpa, 0x1000, 0);
         host.map_range(data_gpa, 0x400, 0);
         let mut d = [0u8; 8];
-        st32(&mut d[crate::protocol::gva::DIRECTORY_ROOT_PFN as usize..], 3);
+        st32(
+            &mut d[crate::protocol::gva::DIRECTORY_ROOT_PFN as usize..],
+            3,
+        );
         st32(&mut d[crate::protocol::gva::DIRECTORY_DEPTH as usize..], 1);
         let _ = host.write_gpa(dir_gpa, &d);
         st32(&mut d[..4], 4);
@@ -9369,7 +9388,10 @@ fn pass_invariants_on_and_off_report_the_same_counters() {
         finish_stream(&mut state, &mut host, 1, &mut out, &acc);
         counters(&out)
     };
-    assert_eq!(off, on, "PASS_INVARIANTS on and off report the same counters");
+    assert_eq!(
+        off, on,
+        "PASS_INVARIANTS on and off report the same counters"
+    );
     // The loop really reached the encode: one attachment resolve, one refused
     // draw (the second is dropped by the break the first one takes).
     assert_eq!(on.0, 1, "the fixture resolved its render target");
@@ -9395,9 +9417,18 @@ fn a_continued_render_encoder_keeps_its_pass_in_the_next_stream() {
     use reims_vgpu_protocol::pass_action::{MTL_LOAD_ACTION_LOAD, MTL_STORE_ACTION_DONT_CARE};
     use reims_vgpu_protocol::segment::{SegmentKind, SEGMENT_HEADER_LEN};
     let mut payload = vec![0u8; wire_pass::RENDER_PASS_TOTAL_LEN as usize - OP_HEADER_LEN];
-    st32(&mut payload[PASS_COLOR_ATTACH_OFF + PASS_ATTACH_TEXREF..], 41);
-    st16(&mut payload[PASS_COLOR_ATTACH_OFF + PASS_ATTACH_LOAD_ACTION..], MTL_LOAD_ACTION_CLEAR);
-    st16(&mut payload[PASS_COLOR_ATTACH_OFF + PASS_ATTACH_STORE_ACTION..], MTL_STORE_ACTION_DONT_CARE);
+    st32(
+        &mut payload[PASS_COLOR_ATTACH_OFF + PASS_ATTACH_TEXREF..],
+        41,
+    );
+    st16(
+        &mut payload[PASS_COLOR_ATTACH_OFF + PASS_ATTACH_LOAD_ACTION..],
+        MTL_LOAD_ACTION_CLEAR,
+    );
+    st16(
+        &mut payload[PASS_COLOR_ATTACH_OFF + PASS_ATTACH_STORE_ACTION..],
+        MTL_STORE_ACTION_DONT_CARE,
+    );
     let mut pass = vec![0u8; OP_HEADER_LEN + payload.len()];
     st32(&mut pass[0..], wire_pass::OPCODE_RENDER_PASS);
     st32(&mut pass[4..], (OP_HEADER_LEN + payload.len()) as u32);
@@ -9423,29 +9454,67 @@ fn a_continued_render_encoder_keeps_its_pass_in_the_next_stream() {
     let mut host = FakeHost::new();
     let mut out = ExecResult::default();
     let mut acc = StreamAccum::default();
-    walk_stream(&mut state, &mut host, 1, &first, &mut out, &mut acc, None, None);
+    walk_stream(
+        &mut state, &mut host, 1, &first, &mut out, &mut acc, None, None,
+    );
     assert!(acc.last_render_continues_into_next && !acc.first_render_continues_previous);
     assert_eq!(acc.clears.len(), 1, "the encoder's own first stream clears");
     hold_pass_for_continuation(&mut acc);
     assert_eq!(
-        acc.color_slots[0].1.store_action,
-        MTL_STORE_ACTION_STORE,
+        acc.color_slots[0].1.store_action, MTL_STORE_ACTION_STORE,
         "the half-drawn encoder is stored for its continuation whatever its own store action"
     );
-    let carried = acc.pass_record.clone().expect("the stream kept its descriptor record");
+    let carried = acc
+        .pass_record
+        .clone()
+        .expect("the stream kept its descriptor record");
 
     let mut lost = StreamAccum::default();
-    walk_stream(&mut state, &mut host, 1, &continuation, &mut out, &mut lost, None, None);
-    assert!(lost.color_slots.is_empty(), "no descriptor in the continuation itself");
+    walk_stream(
+        &mut state,
+        &mut host,
+        1,
+        &continuation,
+        &mut out,
+        &mut lost,
+        None,
+        None,
+    );
+    assert!(
+        lost.color_slots.is_empty(),
+        "no descriptor in the continuation itself"
+    );
 
     let mut next = StreamAccum::default();
-    walk_stream(&mut state, &mut host, 1, &continuation, &mut out, &mut next, None, Some(&carried));
+    walk_stream(
+        &mut state,
+        &mut host,
+        1,
+        &continuation,
+        &mut out,
+        &mut next,
+        None,
+        Some(&carried),
+    );
     assert!(next.first_render_continues_previous);
     assert_eq!(next.color_slots.len(), 1);
     let att = next.color_slots[0].1;
     assert_eq!(att.texture_ref, 41);
-    assert_eq!(att.load_action, MTL_LOAD_ACTION_LOAD, "the continuation loads what the first stream stored");
-    assert_eq!(att.store_action, MTL_STORE_ACTION_DONT_CARE, "the encoder's store action applies at its end");
-    assert!(next.clears.is_empty(), "the encoder's clear is not applied a second time");
-    assert_eq!(next.pass_record.as_deref(), Some(&carried[..]), "and it hands the pass on again");
+    assert_eq!(
+        att.load_action, MTL_LOAD_ACTION_LOAD,
+        "the continuation loads what the first stream stored"
+    );
+    assert_eq!(
+        att.store_action, MTL_STORE_ACTION_DONT_CARE,
+        "the encoder's store action applies at its end"
+    );
+    assert!(
+        next.clears.is_empty(),
+        "the encoder's clear is not applied a second time"
+    );
+    assert_eq!(
+        next.pass_record.as_deref(),
+        Some(&carried[..]),
+        "and it hands the pass on again"
+    );
 }

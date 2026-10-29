@@ -297,6 +297,7 @@ impl ResourcePools {
                 STORAGE_IMAGE_FREE_CAP_TOTAL,
             ),
             compute_storage_registry: HashMap::new(),
+            sampled_memo: SampledMemoStore::default(),
             compute_storage_order: VecDeque::new(),
             registry: Default::default(),
             registry_order: VecDeque::new(),
@@ -689,7 +690,10 @@ impl ResourcePools {
                 Ok(pool) => pool,
                 Err(e) => {
                     destroy_pools(&cmd_pools);
-                    return Err(DrawError::VkCall(VkCall::new(VkOp::PoolsCreateCommandPool, e)));
+                    return Err(DrawError::VkCall(VkCall::new(
+                        VkOp::PoolsCreateCommandPool,
+                        e,
+                    )));
                 }
             };
             counters.note_create(CreateSite::CommandPool);
@@ -703,7 +707,10 @@ impl ResourcePools {
                 Ok(cbs) => cmd_bufs.push(cbs[0]),
                 Err(e) => {
                     destroy_pools(&cmd_pools);
-                    return Err(DrawError::VkCall(VkCall::new(VkOp::PoolsAllocCommandBuffers, e)));
+                    return Err(DrawError::VkCall(VkCall::new(
+                        VkOp::PoolsAllocCommandBuffers,
+                        e,
+                    )));
                 }
             }
         }
@@ -1305,8 +1312,20 @@ impl ResourcePools {
             gpu_span::note_unread();
         }
         let base = DrawSpanProbe::base(slot);
-        crate::backend::vulkan::engine::cmd_sink::reset_query_pool(&ctx.device, cb, probe.pool, base, DrawSpanProbe::PER_SLOT);
-        crate::backend::vulkan::engine::cmd_sink::write_timestamp(&ctx.device, cb, vk::PipelineStageFlags::TOP_OF_PIPE, probe.pool, base);
+        crate::backend::vulkan::engine::cmd_sink::reset_query_pool(
+            &ctx.device,
+            cb,
+            probe.pool,
+            base,
+            DrawSpanProbe::PER_SLOT,
+        );
+        crate::backend::vulkan::engine::cmd_sink::write_timestamp(
+            &ctx.device,
+            cb,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            probe.pool,
+            base,
+        );
         self.slots[slot].span = gpu_span::SlotSpan::Armed(kind);
         gpu_span::note_armed();
     }
@@ -1329,7 +1348,8 @@ impl ResourcePools {
         let gpu_span::SlotSpan::Armed(kind) = self.slots[slot].span else {
             return;
         };
-        crate::backend::vulkan::engine::cmd_sink::write_timestamp(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::write_timestamp(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::BOTTOM_OF_PIPE,
             probe.pool,
@@ -1375,8 +1395,20 @@ impl ResourcePools {
         };
         let slot = self.cur;
         let base = TimestampProbe::base(slot);
-        crate::backend::vulkan::engine::cmd_sink::reset_query_pool(&ctx.device, cb, probe.pool, base, TimestampProbe::PER_SLOT);
-        crate::backend::vulkan::engine::cmd_sink::write_timestamp(&ctx.device, cb, vk::PipelineStageFlags::TOP_OF_PIPE, probe.pool, base);
+        crate::backend::vulkan::engine::cmd_sink::reset_query_pool(
+            &ctx.device,
+            cb,
+            probe.pool,
+            base,
+            TimestampProbe::PER_SLOT,
+        );
+        crate::backend::vulkan::engine::cmd_sink::write_timestamp(
+            &ctx.device,
+            cb,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            probe.pool,
+            base,
+        );
         self.slots[slot].readback_span_armed = true;
     }
 
@@ -1404,7 +1436,8 @@ impl ResourcePools {
         if !self.slots[self.cur].readback_span_armed {
             return;
         }
-        crate::backend::vulkan::engine::cmd_sink::write_timestamp(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::write_timestamp(
+            &ctx.device,
             cb,
             stage,
             probe.pool,
@@ -1553,7 +1586,8 @@ impl ResourcePools {
             if self.slots[index].pending.is_none() {
                 continue;
             }
-            let signaled = ctx.fence_status(self.slots[index].fence)
+            let signaled = ctx
+                .fence_status(self.slots[index].fence)
                 .map_err(|e| Self::wait_error(counters, e, status_op))?;
             if !signaled {
                 break;
@@ -1622,10 +1656,9 @@ impl ResourcePools {
             // Count as a "block" only when the fence is genuinely unsignaled
             // (the GPU still owns the slot); reclaiming a finished slot on
             // advance is bookkeeping, not a stall.
-            let still_running = !ctx.fence_status(self.slots[next].fence)
-                .map_err(|e| {
-                    Self::wait_error(counters, e, DeviceLostOp::PoolsFenceStatusBeginEntry)
-                })?;
+            let still_running = !ctx.fence_status(self.slots[next].fence).map_err(|e| {
+                Self::wait_error(counters, e, DeviceLostOp::PoolsFenceStatusBeginEntry)
+            })?;
             self.retire_slot(ctx, counters, next)?;
             if still_running {
                 counters.ring_retire_blocks.fetch_add(1, Ordering::Relaxed);
@@ -1651,10 +1684,9 @@ impl ResourcePools {
         self.forget_pass_echo();
         let next = (self.cur + 1) % self.slots.len();
         if self.slots[next].pending.is_some() {
-            let still_running = !ctx.fence_status(self.slots[next].fence)
-                .map_err(|e| {
-                    Self::wait_error(counters, e, DeviceLostOp::PoolsFenceStatusBeginEntry)
-                })?;
+            let still_running = !ctx.fence_status(self.slots[next].fence).map_err(|e| {
+                Self::wait_error(counters, e, DeviceLostOp::PoolsFenceStatusBeginEntry)
+            })?;
             self.retire_slot(ctx, counters, next)?;
             if still_running {
                 counters.ring_retire_blocks.fetch_add(1, Ordering::Relaxed);
@@ -1681,10 +1713,9 @@ impl ResourcePools {
             if self.slots[index].pending.is_none() {
                 continue;
             }
-            let signaled = ctx.fence_status(self.slots[index].fence)
-                .map_err(|e| {
-                    Self::wait_error(counters, e, DeviceLostOp::PoolsFenceStatusBeginEntry)
-                })?;
+            let signaled = ctx.fence_status(self.slots[index].fence).map_err(|e| {
+                Self::wait_error(counters, e, DeviceLostOp::PoolsFenceStatusBeginEntry)
+            })?;
             if !signaled {
                 break;
             }
@@ -1759,7 +1790,10 @@ impl ResourcePools {
 
     /// TEMP (lab, T2T_PARK): a draw is recording a GPU copy out of a leased
     /// readback slot; the entry holds the lease until it retires.
-    pub(crate) fn note_parked_read(&mut self, hold: std::sync::Arc<crate::backend::vulkan::engine::LeaseHold>) {
+    pub(crate) fn note_parked_read(
+        &mut self,
+        hold: std::sync::Arc<crate::backend::vulkan::engine::LeaseHold>,
+    ) {
         self.entry.keep.push(hold);
     }
 
@@ -2066,7 +2100,10 @@ impl ResourcePools {
     /// The handle comparison inside that struct is the second lock on the same
     /// door, not the first.
     pub(crate) fn forget_pass_echo(&mut self) {
-        debug_assert!(self.entry.open_pass.is_none(), "forgetting an open render pass");
+        debug_assert!(
+            self.entry.open_pass.is_none(),
+            "forgetting an open render pass"
+        );
         self.entry.last_pass = None;
         self.entry.cb_graphics.cb = None;
         self.entry.cb_graphics.forget_recorded();
@@ -2546,7 +2583,14 @@ impl ResourcePools {
         g.blend_constants = None;
         g.depth_bias_set = false;
         g.line_width = None;
-        unsafe { crate::backend::vulkan::engine::cmd_sink::bind_pipeline(&device, cb, vk::PipelineBindPoint::GRAPHICS, pipeline) };
+        unsafe {
+            crate::backend::vulkan::engine::cmd_sink::bind_pipeline(
+                &device,
+                cb,
+                vk::PipelineBindPoint::GRAPHICS,
+                pipeline,
+            )
+        };
     }
 
     /// The scratch arrays a draw builds its viewport and scissor lists into,
@@ -2584,7 +2628,9 @@ impl ResourcePools {
                 .fetch_add(1, Ordering::Relaxed);
         } else {
             std::mem::swap(&mut g.viewports, &mut g.vp_scratch);
-            unsafe { crate::backend::vulkan::engine::cmd_sink::set_viewport(&device, cb, 0, &g.viewports) };
+            unsafe {
+                crate::backend::vulkan::engine::cmd_sink::set_viewport(&device, cb, 0, &g.viewports)
+            };
         }
         if super::scissors_match(&g.sc_scratch, &g.scissors) {
             counters
@@ -2592,7 +2638,9 @@ impl ResourcePools {
                 .fetch_add(1, Ordering::Relaxed);
         } else {
             std::mem::swap(&mut g.scissors, &mut g.sc_scratch);
-            unsafe { crate::backend::vulkan::engine::cmd_sink::set_scissor(&device, cb, 0, &g.scissors) };
+            unsafe {
+                crate::backend::vulkan::engine::cmd_sink::set_scissor(&device, cb, 0, &g.scissors)
+            };
         }
     }
 
@@ -2662,7 +2710,8 @@ impl ResourcePools {
         while start < vertex_scratch.len() {
             let end = super::vertex_binding_run_end(vertex_scratch, start);
             unsafe {
-                crate::backend::vulkan::engine::cmd_sink::bind_vertex_buffers(&device, 
+                crate::backend::vulkan::engine::cmd_sink::bind_vertex_buffers(
+                    &device,
                     cb,
                     vertex_scratch[start].binding,
                     &vertex_buffers[start..end],
@@ -2742,7 +2791,10 @@ impl ResourcePools {
         bound: super::super::exec::BoundBuffer,
         len: u64,
     ) {
-        self.entry.cb_graphics.storage_binds.push((binding, bound, len));
+        self.entry
+            .cb_graphics
+            .storage_binds
+            .push((binding, bound, len));
     }
 
     /// The cleared descriptor scratch and this draw's storage binds, together.
@@ -2826,8 +2878,18 @@ impl ResourcePools {
         }
         g.stencil = Some((front, back));
         unsafe {
-            crate::backend::vulkan::engine::cmd_sink::set_stencil_reference(&device, cb, vk::StencilFaceFlags::FRONT, front);
-            crate::backend::vulkan::engine::cmd_sink::set_stencil_reference(&device, cb, vk::StencilFaceFlags::BACK, back);
+            crate::backend::vulkan::engine::cmd_sink::set_stencil_reference(
+                &device,
+                cb,
+                vk::StencilFaceFlags::FRONT,
+                front,
+            );
+            crate::backend::vulkan::engine::cmd_sink::set_stencil_reference(
+                &device,
+                cb,
+                vk::StencilFaceFlags::BACK,
+                back,
+            );
         }
     }
 
@@ -2865,7 +2927,9 @@ impl ResourcePools {
             return;
         }
         g.depth_bias_set = true;
-        unsafe { crate::backend::vulkan::engine::cmd_sink::set_depth_bias(&device, cb, 0.0, 0.0, 0.0) };
+        unsafe {
+            crate::backend::vulkan::engine::cmd_sink::set_depth_bias(&device, cb, 0.0, 0.0, 0.0)
+        };
     }
 
     /// Record whichever rasterization members this host supplies per draw,
@@ -2906,15 +2970,23 @@ impl ResourcePools {
                 unsafe { crate::backend::vulkan::engine::cmd_sink::set_cull_mode(&eds, cb, cull) };
             }
             if let Some(front) = values.front_face {
-                unsafe { crate::backend::vulkan::engine::cmd_sink::set_front_face(&eds, cb, front) };
+                unsafe {
+                    crate::backend::vulkan::engine::cmd_sink::set_front_face(&eds, cb, front)
+                };
             }
         }
         if let Some(eds3) = ctx.extended_dynamic_state3.as_ref() {
             if let Some(mode) = values.polygon_mode {
-                unsafe { crate::backend::vulkan::engine::cmd_sink::set_polygon_mode(&eds3, cb, mode) };
+                unsafe {
+                    crate::backend::vulkan::engine::cmd_sink::set_polygon_mode(&eds3, cb, mode)
+                };
             }
             if let Some(clamp) = values.depth_clamp_enable {
-                unsafe { crate::backend::vulkan::engine::cmd_sink::set_depth_clamp_enable(&eds3, cb, clamp) };
+                unsafe {
+                    crate::backend::vulkan::engine::cmd_sink::set_depth_clamp_enable(
+                        &eds3, cb, clamp,
+                    )
+                };
             }
         }
     }
@@ -3004,18 +3076,39 @@ impl ResourcePools {
             return;
         };
         unsafe {
-            crate::backend::vulkan::engine::cmd_sink::set_depth_test_enable(&eds, cb, state.depth_test_enable);
-            crate::backend::vulkan::engine::cmd_sink::set_depth_write_enable(&eds, cb, state.depth_write_enable);
-            crate::backend::vulkan::engine::cmd_sink::set_depth_compare_op(&eds, cb, state.depth_compare_op);
-            crate::backend::vulkan::engine::cmd_sink::set_depth_bounds_test_enable(&eds, cb, state.depth_bounds_test_enable);
-            crate::backend::vulkan::engine::cmd_sink::set_stencil_test_enable(&eds, cb, state.stencil_test_enable);
+            crate::backend::vulkan::engine::cmd_sink::set_depth_test_enable(
+                &eds,
+                cb,
+                state.depth_test_enable,
+            );
+            crate::backend::vulkan::engine::cmd_sink::set_depth_write_enable(
+                &eds,
+                cb,
+                state.depth_write_enable,
+            );
+            crate::backend::vulkan::engine::cmd_sink::set_depth_compare_op(
+                &eds,
+                cb,
+                state.depth_compare_op,
+            );
+            crate::backend::vulkan::engine::cmd_sink::set_depth_bounds_test_enable(
+                &eds,
+                cb,
+                state.depth_bounds_test_enable,
+            );
+            crate::backend::vulkan::engine::cmd_sink::set_stencil_test_enable(
+                &eds,
+                cb,
+                state.stencil_test_enable,
+            );
         }
         for (faces, face) in [
             (vk::StencilFaceFlags::FRONT, state.front),
             (vk::StencilFaceFlags::BACK, state.back),
         ] {
             unsafe {
-                crate::backend::vulkan::engine::cmd_sink::set_stencil_op(&eds, 
+                crate::backend::vulkan::engine::cmd_sink::set_stencil_op(
+                    &eds,
                     cb,
                     faces,
                     face.fail_op,
@@ -3023,8 +3116,18 @@ impl ResourcePools {
                     face.depth_fail_op,
                     face.compare_op,
                 );
-                crate::backend::vulkan::engine::cmd_sink::set_stencil_compare_mask(&ctx.device, cb, faces, face.compare_mask);
-                crate::backend::vulkan::engine::cmd_sink::set_stencil_write_mask(&ctx.device, cb, faces, face.write_mask);
+                crate::backend::vulkan::engine::cmd_sink::set_stencil_compare_mask(
+                    &ctx.device,
+                    cb,
+                    faces,
+                    face.compare_mask,
+                );
+                crate::backend::vulkan::engine::cmd_sink::set_stencil_write_mask(
+                    &ctx.device,
+                    cb,
+                    faces,
+                    face.write_mask,
+                );
             }
         }
     }
@@ -3063,7 +3166,9 @@ impl ResourcePools {
         }
         g.topology = Some(wanted);
         if let (Some(eds), Some(topology)) = (ctx.extended_dynamic_state.as_ref(), wanted) {
-            unsafe { crate::backend::vulkan::engine::cmd_sink::set_primitive_topology(&eds, cb, topology) };
+            unsafe {
+                crate::backend::vulkan::engine::cmd_sink::set_primitive_topology(&eds, cb, topology)
+            };
         }
     }
 
@@ -3094,7 +3199,9 @@ impl ResourcePools {
             return;
         }
         g.blend_constants = Some(bits);
-        unsafe { crate::backend::vulkan::engine::cmd_sink::set_blend_constants(&device, cb, &constants) };
+        unsafe {
+            crate::backend::vulkan::engine::cmd_sink::set_blend_constants(&device, cb, &constants)
+        };
     }
 
     /// Clear the guest-read debt and answer whether there was one.
@@ -3285,7 +3392,12 @@ impl ResourcePools {
                     }
                     super::LabVerify::Guest { content, hash, t } => {
                         let bytes = content.cpu_bytes();
-                        ("guest", super::lab_verify_hash(&bytes) != *hash, bytes.len(), *t)
+                        (
+                            "guest",
+                            super::lab_verify_hash(&bytes) != *hash,
+                            bytes.len(),
+                            *t,
+                        )
                     }
                 };
                 crate::runtime::drain::note_store_route(match (kind, changed) {
@@ -4387,7 +4499,10 @@ impl ResourcePools {
         final_layout: vk::ImageLayout,
         counters: &EngineCounters,
     ) -> Result<(vk::Image, vk::ImageView, vk::Framebuffer), DrawError> {
-        let found = self.multisample_sources.iter().position(|s| s.source == source);
+        let found = self
+            .multisample_sources
+            .iter()
+            .position(|s| s.source == source);
         let fits = found.is_some_and(|i| {
             let s = &self.multisample_sources[i];
             s.width == key.width
@@ -4422,7 +4537,8 @@ impl ResourcePools {
                     },
                 );
             }
-            let (image, memory, view) = unsafe { self.create_multisample_image(ctx, &key, counters) }?;
+            let (image, memory, view) =
+                unsafe { self.create_multisample_image(ctx, &key, counters) }?;
             crate::runtime::drain::note_store_route("msaa_source_created");
             self.multisample_sources.push(MultisampleSourceSlot {
                 source,
@@ -4444,7 +4560,14 @@ impl ResourcePools {
         let mut views = vec![view, key.resolve_view];
         views.extend(key.depth_view);
         let framebuffer = unsafe {
-            self.ensure_ad_hoc_framebuffer(ctx, render_pass, &views, key.width, key.height, counters)
+            self.ensure_ad_hoc_framebuffer(
+                ctx,
+                render_pass,
+                &views,
+                key.width,
+                key.height,
+                counters,
+            )
         }?;
         if let Some(last) = self.multisample_sources.last_mut() {
             last.layout = Some(final_layout);
@@ -4671,7 +4794,9 @@ impl ResourcePools {
             let handles = slot.handles();
             match use_ {
                 SampledTransientUse::Upload => self.entry.sampled_live.push(slot),
-                SampledTransientUse::AttachmentSnapshot => self.entry.attachment_snapshot_live.push(slot),
+                SampledTransientUse::AttachmentSnapshot => {
+                    self.entry.attachment_snapshot_live.push(slot)
+                }
             }
             return Ok(handles);
         }
@@ -4773,7 +4898,9 @@ impl ResourcePools {
         let handles = slot.handles();
         match use_ {
             SampledTransientUse::Upload => self.entry.sampled_live.push(slot),
-            SampledTransientUse::AttachmentSnapshot => self.entry.attachment_snapshot_live.push(slot),
+            SampledTransientUse::AttachmentSnapshot => {
+                self.entry.attachment_snapshot_live.push(slot)
+            }
         }
         Ok(handles)
     }
@@ -7557,7 +7684,11 @@ mod gather_slots_do_not_alias {
             first.buffer, second.buffer,
             "two live gather slots must not be one buffer"
         );
-        assert_eq!(pools.entry.gather_live.len(), 2, "both must be recorded live");
+        assert_eq!(
+            pools.entry.gather_live.len(),
+            2,
+            "both must be recorded live"
+        );
     }
 
     /// A slot that has been handed out is gone from the free list, so it cannot

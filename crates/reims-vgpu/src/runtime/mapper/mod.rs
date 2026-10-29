@@ -3316,7 +3316,14 @@ pub fn write_mapping_bytes_only<H: HostMemory + HostOps>(
         "mapping_write",
     );
     if ok {
-        rebase_device_write(state, &*host, mapping_id, off, off.saturating_add(buf.len() as u64), only);
+        rebase_device_write(
+            state,
+            &*host,
+            mapping_id,
+            off,
+            off.saturating_add(buf.len() as u64),
+            only,
+        );
     }
     if let Some(m) = state.mappings.get_mut(&mapping_id) {
         m.guest_bytes_seq = m.guest_bytes_seq.wrapping_add(1);

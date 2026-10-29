@@ -110,6 +110,8 @@ const HEADER_WORDS: usize = 5;
 /// and the next starts, which is a fact about our own translated layout.
 const SAMPLED_RESOURCE_BINDING_BASE: u32 = 32;
 const STORAGE_CLASS_UNIFORM_CONSTANT: u32 = 0;
+const STORAGE_CLASS_UNIFORM: u32 = 2;
+const STORAGE_CLASS_STORAGE_BUFFER: u32 = 12;
 
 // ---------------------------------------------------------------------------
 // Translator and executable numbering
@@ -477,6 +479,15 @@ fn descriptor_root(
     wanted_binding: u32,
     storage_class: u32,
 ) -> Option<Root> {
+    descriptor_root_in_classes(words, instrs, wanted_binding, &[storage_class])
+}
+
+fn descriptor_root_in_classes(
+    words: &[u32],
+    instrs: &[Instruction],
+    wanted_binding: u32,
+    storage_classes: &[u32],
+) -> Option<Root> {
     let bound = *words.get(3)? as usize;
     if bound == 0 {
         return None;
@@ -506,7 +517,9 @@ fn descriptor_root(
         }
     }
     let mut roots = bindings.iter().enumerate().filter_map(|(id, binding)| {
-        (*binding == Some(wanted_binding) && storage[id] == Some(storage_class)).then_some(id)
+        (*binding == Some(wanted_binding)
+            && storage[id].is_some_and(|class| storage_classes.contains(&class)))
+        .then_some(id)
     });
     let id = roots.next()?;
     Some(if roots.next().is_some() {
@@ -567,10 +580,33 @@ pub fn declares_descriptor(words: &[u32], binding: u32) -> bool {
 /// `OpImageTexelPointer` that never gets loaded, because those reference the
 /// variable and the spec asks about references rather than about loads.
 pub fn descriptor_static_use(words: &[u32], binding: u32) -> DescriptorUse {
+    descriptor_static_use_in_classes(words, binding, &[STORAGE_CLASS_UNIFORM_CONSTANT])
+}
+
+/// As [`descriptor_static_use`], but for a directly-bound buffer descriptor.
+///
+/// Metal buffer arguments translate to either SPIR-V `Uniform` or
+/// `StorageBuffer`; both participate in the descriptor layout and must use the
+/// same static-use rule as sampled descriptors. Keeping this separate from
+/// [`descriptor_static_use`] prevents buffer variables from being mistaken for
+/// sampled resources merely because their binding number overlaps a band.
+pub fn buffer_descriptor_static_use(words: &[u32], binding: u32) -> DescriptorUse {
+    descriptor_static_use_in_classes(
+        words,
+        binding,
+        &[STORAGE_CLASS_UNIFORM, STORAGE_CLASS_STORAGE_BUFFER],
+    )
+}
+
+fn descriptor_static_use_in_classes(
+    words: &[u32],
+    binding: u32,
+    storage_classes: &[u32],
+) -> DescriptorUse {
     let Some(instrs) = instructions(words) else {
         return DescriptorUse::NotDeclared;
     };
-    let root = match descriptor_root(words, &instrs, binding, STORAGE_CLASS_UNIFORM_CONSTANT) {
+    let root = match descriptor_root_in_classes(words, &instrs, binding, storage_classes) {
         None => return DescriptorUse::NotDeclared,
         Some(Root::Ambiguous) => return DescriptorUse::Ambiguous,
         Some(Root::One { id, .. }) => id as u32,
@@ -1038,7 +1074,9 @@ fn loop_budget_words(words: &[u32], cap: u32) -> Option<(Vec<u32>, u32)> {
             t
         }
     };
-    let t_fn = match find(&|x| op(x) == OP_TYPE_FUNCTION && x.len() == 4 && x[2] == t_void && x[3] == t_uint) {
+    let t_fn = match find(&|x| {
+        op(x) == OP_TYPE_FUNCTION && x.len() == 4 && x[2] == t_void && x[3] == t_uint
+    }) {
         Some(t) => t,
         None => {
             let t = next();
@@ -1161,7 +1199,10 @@ pub fn demote_multisampled_images(words: &[u32]) -> Option<Vec<u32>> {
         return None;
     }
     // A single-sample twin would become a duplicate declaration.
-    for x in ins.iter().filter(|x| op(x) == u32::from(OP_TYPE_IMAGE) && x.len() >= 9 && x[6] == 1) {
+    for x in ins
+        .iter()
+        .filter(|x| op(x) == u32::from(OP_TYPE_IMAGE) && x.len() >= 9 && x[6] == 1)
+    {
         let twin = ins.iter().any(|y| {
             op(y) == u32::from(OP_TYPE_IMAGE)
                 && y.len() == x.len()
@@ -1200,18 +1241,19 @@ pub fn demote_multisampled_images(words: &[u32]) -> Option<Vec<u32>> {
             t
         }
     };
-    let constant = |ty: u32, value: u32, added: &mut Vec<Vec<u32>>, next: &mut dyn FnMut() -> u32| {
-        globals
-            .iter()
-            .chain(added.iter())
-            .find(|x| op(x) == OP_CONSTANT && x.len() == 4 && x[1] == ty && x[3] == value)
-            .map(|x| x[2])
-            .unwrap_or_else(|| {
-                let id = next();
-                added.push(vec![(4 << 16) | OP_CONSTANT, ty, id, value]);
-                id
-            })
-    };
+    let constant =
+        |ty: u32, value: u32, added: &mut Vec<Vec<u32>>, next: &mut dyn FnMut() -> u32| {
+            globals
+                .iter()
+                .chain(added.iter())
+                .find(|x| op(x) == OP_CONSTANT && x.len() == 4 && x[1] == ty && x[3] == value)
+                .map(|x| x[2])
+                .unwrap_or_else(|| {
+                    let id = next();
+                    added.push(vec![(4 << 16) | OP_CONSTANT, ty, id, value]);
+                    id
+                })
+        };
     let zero = constant(int_ty, 0, &mut added, &mut next);
     let mut rewritten = 0usize;
     for x in ins.iter_mut() {
@@ -1223,7 +1265,10 @@ pub fn demote_multisampled_images(words: &[u32]) -> Option<Vec<u32>> {
     let mut body: Vec<Vec<u32>> = Vec::with_capacity(ins.len() - first_fn);
     for x in ins.drain(first_fn..) {
         let o = op(&x);
-        if (o == OP_IMAGE_FETCH || o == u32::from(OP_IMAGE_READ)) && x.len() >= 5 && ms_values.contains(&x[3]) {
+        if (o == OP_IMAGE_FETCH || o == u32::from(OP_IMAGE_READ))
+            && x.len() >= 5
+            && ms_values.contains(&x[3])
+        {
             let mut y = x[..5].to_vec();
             if x.len() > 5 {
                 let mask = x[5];
@@ -1260,9 +1305,18 @@ pub fn demote_multisampled_images(words: &[u32]) -> Option<Vec<u32>> {
             body.push(y);
             rewritten += 1;
         } else if o == u32::from(OP_IMAGE_QUERY_SIZE) && x.len() == 4 && ms_values.contains(&x[3]) {
-            body.push(vec![(5 << 16) | u32::from(OP_IMAGE_QUERY_SIZE_LOD), x[1], x[2], x[3], zero]);
+            body.push(vec![
+                (5 << 16) | u32::from(OP_IMAGE_QUERY_SIZE_LOD),
+                x[1],
+                x[2],
+                x[3],
+                zero,
+            ]);
             rewritten += 1;
-        } else if o == u32::from(OP_IMAGE_QUERY_SAMPLES) && x.len() == 4 && ms_values.contains(&x[3]) {
+        } else if o == u32::from(OP_IMAGE_QUERY_SAMPLES)
+            && x.len() == 4
+            && ms_values.contains(&x[3])
+        {
             let one = constant(x[1], 1, &mut added, &mut next);
             body.push(vec![(4 << 16) | u32::from(OP_COPY_OBJECT), x[1], x[2], one]);
             rewritten += 1;
@@ -1284,27 +1338,24 @@ mod demote_multisampled_tests {
     /// `texture2d_ms<float> t; t.get_num_samples(); t.get_width(); t.read(uint2(0), 3)`, assembled from
     /// SPIR-V text and valid for Vulkan 1.2 as it stands.
     const MS_FETCH: &[u32] = &[
-        0x07230203, 0x00010500, 0x00070000, 0x00000015, 0x00000000, 0x00020011,
-        0x00000001, 0x00020011, 0x00000032, 0x0003000e, 0x00000000, 0x00000001,
-        0x0007000f, 0x00000004, 0x00000001, 0x6e69616d, 0x00000000, 0x00000002,
-        0x00000003, 0x00030010, 0x00000001, 0x00000007, 0x00040047, 0x00000002,
-        0x0000001e, 0x00000000, 0x00040047, 0x00000003, 0x00000022, 0x00000000,
-        0x00040047, 0x00000003, 0x00000021, 0x00000020, 0x00020013, 0x00000004,
-        0x00030021, 0x00000005, 0x00000004, 0x00030016, 0x00000006, 0x00000020,
-        0x00040015, 0x00000007, 0x00000020, 0x00000000, 0x00040017, 0x00000008,
-        0x00000006, 0x00000004, 0x00040017, 0x00000009, 0x00000007, 0x00000002,
-        0x00090019, 0x0000000a, 0x00000006, 0x00000001, 0x00000000, 0x00000000,
-        0x00000001, 0x00000001, 0x00000000, 0x00040020, 0x0000000b, 0x00000000,
-        0x0000000a, 0x0004003b, 0x0000000b, 0x00000003, 0x00000000, 0x00040020,
-        0x0000000c, 0x00000003, 0x00000008, 0x0004003b, 0x0000000c, 0x00000002,
-        0x00000003, 0x0004002b, 0x00000007, 0x0000000d, 0x00000000, 0x0004002b,
-        0x00000007, 0x0000000e, 0x00000003, 0x0005002c, 0x00000009, 0x0000000f,
-        0x0000000d, 0x0000000d, 0x00050036, 0x00000004, 0x00000001, 0x00000000,
-        0x00000005, 0x000200f8, 0x00000010, 0x0004003d, 0x0000000a, 0x00000011,
-        0x00000003, 0x0004006b, 0x00000007, 0x00000012, 0x00000011, 0x00040068,
-        0x00000009, 0x00000013, 0x00000011, 0x0007005f, 0x00000008, 0x00000014,
-        0x00000011, 0x0000000f, 0x00000040, 0x0000000e, 0x0003003e, 0x00000002,
-        0x00000014, 0x000100fd, 0x00010038,
+        0x07230203, 0x00010500, 0x00070000, 0x00000015, 0x00000000, 0x00020011, 0x00000001,
+        0x00020011, 0x00000032, 0x0003000e, 0x00000000, 0x00000001, 0x0007000f, 0x00000004,
+        0x00000001, 0x6e69616d, 0x00000000, 0x00000002, 0x00000003, 0x00030010, 0x00000001,
+        0x00000007, 0x00040047, 0x00000002, 0x0000001e, 0x00000000, 0x00040047, 0x00000003,
+        0x00000022, 0x00000000, 0x00040047, 0x00000003, 0x00000021, 0x00000020, 0x00020013,
+        0x00000004, 0x00030021, 0x00000005, 0x00000004, 0x00030016, 0x00000006, 0x00000020,
+        0x00040015, 0x00000007, 0x00000020, 0x00000000, 0x00040017, 0x00000008, 0x00000006,
+        0x00000004, 0x00040017, 0x00000009, 0x00000007, 0x00000002, 0x00090019, 0x0000000a,
+        0x00000006, 0x00000001, 0x00000000, 0x00000000, 0x00000001, 0x00000001, 0x00000000,
+        0x00040020, 0x0000000b, 0x00000000, 0x0000000a, 0x0004003b, 0x0000000b, 0x00000003,
+        0x00000000, 0x00040020, 0x0000000c, 0x00000003, 0x00000008, 0x0004003b, 0x0000000c,
+        0x00000002, 0x00000003, 0x0004002b, 0x00000007, 0x0000000d, 0x00000000, 0x0004002b,
+        0x00000007, 0x0000000e, 0x00000003, 0x0005002c, 0x00000009, 0x0000000f, 0x0000000d,
+        0x0000000d, 0x00050036, 0x00000004, 0x00000001, 0x00000000, 0x00000005, 0x000200f8,
+        0x00000010, 0x0004003d, 0x0000000a, 0x00000011, 0x00000003, 0x0004006b, 0x00000007,
+        0x00000012, 0x00000011, 0x00040068, 0x00000009, 0x00000013, 0x00000011, 0x0007005f,
+        0x00000008, 0x00000014, 0x00000011, 0x0000000f, 0x00000040, 0x0000000e, 0x0003003e,
+        0x00000002, 0x00000014, 0x000100fd, 0x00010038,
     ];
 
     fn walk(words: &[u32]) -> Vec<(u32, Vec<u32>)> {
@@ -1320,14 +1371,36 @@ mod demote_multisampled_tests {
 
     #[test]
     fn a_multisampled_read_becomes_a_level_zero_read_of_a_single_sample_image() {
-        let out = super::demote_multisampled_images(MS_FETCH).expect("one multisampled image to demote");
+        let out =
+            super::demote_multisampled_images(MS_FETCH).expect("one multisampled image to demote");
         let ins = walk(&out);
-        assert!(ins.iter().filter(|(o, _)| *o == 25).all(|(_, x)| x[6] == 0), "an MS=1 image type is left");
-        assert!(!ins.iter().any(|(o, _)| *o == 107), "OpImageQuerySamples is left");
-        assert!(!ins.iter().any(|(o, _)| *o == 104), "OpImageQuerySize is left");
-        assert!(ins.iter().any(|(o, x)| *o == 103 && x.len() == 5), "no OpImageQuerySizeLod");
-        let fetch = ins.iter().find(|(o, _)| *o == 95).expect("the fetch").1.clone();
-        assert_eq!(fetch.len(), 7, "fetch keeps image, coordinate and one operand");
+        assert!(
+            ins.iter().filter(|(o, _)| *o == 25).all(|(_, x)| x[6] == 0),
+            "an MS=1 image type is left"
+        );
+        assert!(
+            !ins.iter().any(|(o, _)| *o == 107),
+            "OpImageQuerySamples is left"
+        );
+        assert!(
+            !ins.iter().any(|(o, _)| *o == 104),
+            "OpImageQuerySize is left"
+        );
+        assert!(
+            ins.iter().any(|(o, x)| *o == 103 && x.len() == 5),
+            "no OpImageQuerySizeLod"
+        );
+        let fetch = ins
+            .iter()
+            .find(|(o, _)| *o == 95)
+            .expect("the fetch")
+            .1
+            .clone();
+        assert_eq!(
+            fetch.len(),
+            7,
+            "fetch keeps image, coordinate and one operand"
+        );
         assert_eq!(fetch[5], 0x2, "the Sample operand became Lod");
         // spirv-val, when this host has it: the rewritten module must be what Vulkan accepts.
         let path = std::env::temp_dir().join("reims-demote-ms-test.spv");
@@ -1371,7 +1444,8 @@ mod lab_loop_budget_tests {
             .chunks_exact(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        let (out, loops) = super::loop_budget_words(&words, 4096).expect("fragment module with loops");
+        let (out, loops) =
+            super::loop_budget_words(&words, 4096).expect("fragment module with loops");
         assert_eq!(loops, 168);
         let out_path = std::env::temp_dir().join("lab-loop-budget-test.spv");
         let bytes: Vec<u8> = out.iter().flat_map(|w| w.to_le_bytes()).collect();
@@ -1390,7 +1464,9 @@ pub fn validate_memo(digest: (u64, u64), words: &[u32]) -> SpirvValidation {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
     static ON: OnceLock<bool> = OnceLock::new();
-    if !*ON.get_or_init(|| std::env::var("REIMS_VGPU_LAB_SPIRV_VAL_MEMO").map_or(true, |v| v != "off")) {
+    if !*ON
+        .get_or_init(|| std::env::var("REIMS_VGPU_LAB_SPIRV_VAL_MEMO").map_or(true, |v| v != "off"))
+    {
         return validate(words);
     }
     static ACCEPTED: OnceLock<Mutex<HashSet<(u64, u64)>>> = OnceLock::new();
@@ -1413,7 +1489,11 @@ pub fn validate_memo(digest: (u64, u64), words: &[u32]) -> SpirvValidation {
         crate::observe::off(format!("lab_spirv_val_memo loaded={}", set.len()));
         Mutex::new(set)
     });
-    if set.lock().unwrap_or_else(|e| e.into_inner()).contains(&digest) {
+    if set
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&digest)
+    {
         crate::runtime::drain::note_store_route("lab_spirv_val_memo_hit");
         return SpirvValidation::Accepted;
     }
@@ -1423,7 +1503,11 @@ pub fn validate_memo(digest: (u64, u64), words: &[u32]) -> SpirvValidation {
         set.lock().unwrap_or_else(|e| e.into_inner()).insert(digest);
         if let Some(f) = file {
             use std::io::Write;
-            if let Ok(mut out) = std::fs::OpenOptions::new().create(true).append(true).open(f) {
+            if let Ok(mut out) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(f)
+            {
                 let _ = writeln!(out, "{:016x}{:016x}", digest.0, digest.1);
             }
         }
@@ -3446,9 +3530,10 @@ fn reflected_buffer_footprint_extent(
             None => "lab_bbx_no_binding",
             Some(None) => "lab_bbx_no_footprint",
             Some(Some(f)) if f.has_unbounded_access => "lab_bbx_unbounded_access",
-            Some(Some(f)) if f.strided_accesses.iter().any(|a| {
-                a.terms.iter().any(|t| maximum(t.source).is_none())
-            }) =>
+            Some(Some(f))
+                if f.strided_accesses
+                    .iter()
+                    .any(|a| a.terms.iter().any(|t| maximum(t.source).is_none())) =>
             {
                 "lab_bbx_source_unbounded"
             }
@@ -3643,7 +3728,10 @@ pub fn lab_absent_neutral() -> bool {
     }
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        let on = !matches!(std::env::var("REIMS_VGPU_LAB_ABSENT_NEUTRAL").as_deref(), Ok("off"));
+        let on = !matches!(
+            std::env::var("REIMS_VGPU_LAB_ABSENT_NEUTRAL").as_deref(),
+            Ok("off")
+        );
         crate::observe::off(format!("lab_absent_neutral on={}", u8::from(on)));
         on
     })
@@ -4350,7 +4438,7 @@ pub(crate) mod test_support {
         words
     }
 
-    /// A fragment module declaring one `UniformConstant` variable on `binding`,
+    /// A fragment module declaring one descriptor variable on `binding`,
     /// named by `OpEntryPoint`'s interface list the way SPIR-V 1.4 requires, and
     /// referenced by an `OpLoad` only when `loaded`.
     ///
@@ -4359,6 +4447,14 @@ pub(crate) mod test_support {
     /// without it would not exercise the one exclusion that decides
     /// [`descriptor_static_use`]'s answer.
     pub(crate) fn module_with_descriptor(binding: u32, loaded: bool) -> Vec<u32> {
+        module_with_descriptor_in_storage_class(binding, STORAGE_CLASS_UNIFORM_CONSTANT, loaded)
+    }
+
+    pub(crate) fn module_with_descriptor_in_storage_class(
+        binding: u32,
+        storage_class: u32,
+        loaded: bool,
+    ) -> Vec<u32> {
         const VAR: u32 = 10;
         const FN: u32 = 11;
         let mut body = vec![
@@ -4377,11 +4473,11 @@ pub(crate) mod test_support {
             VAR,
             DECORATION_BINDING,
             binding,
-            // %VAR = OpVariable %2 UniformConstant
+            // %VAR = OpVariable %2 <storage_class>
             (4u32 << 16) | OP_VARIABLE as u32,
             2,
             VAR,
-            STORAGE_CLASS_UNIFORM_CONSTANT,
+            storage_class,
         ];
         if loaded {
             // %12 = OpLoad %2 %VAR
@@ -4398,6 +4494,14 @@ mod more_tests {
 
     fn module_with_descriptor(binding: u32, loaded: bool) -> Vec<u32> {
         super::test_support::module_with_descriptor(binding, loaded)
+    }
+
+    fn module_with_descriptor_in_storage_class(
+        binding: u32,
+        storage_class: u32,
+        loaded: bool,
+    ) -> Vec<u32> {
+        super::test_support::module_with_descriptor_in_storage_class(binding, storage_class, loaded)
     }
 
     /// Declaration and static use are different questions, and only the second
@@ -4431,6 +4535,21 @@ mod more_tests {
             DescriptorUse::NotDeclared,
             "a binding no variable carries is not a use of anything"
         );
+    }
+
+    #[test]
+    fn a_buffer_descriptor_is_used_only_when_its_body_references_it() {
+        for storage_class in [STORAGE_CLASS_UNIFORM, STORAGE_CLASS_STORAGE_BUFFER] {
+            let unused = module_with_descriptor_in_storage_class(17, storage_class, false);
+            let used = module_with_descriptor_in_storage_class(17, storage_class, true);
+
+            assert_eq!(
+                buffer_descriptor_static_use(&unused, 17),
+                DescriptorUse::DeclaredUnused,
+                "the module interface names the buffer without making it a layout use"
+            );
+            assert_eq!(buffer_descriptor_static_use(&used, 17), DescriptorUse::Used);
+        }
     }
 
     /// Two variables on one binding is its own defect and must not be reported

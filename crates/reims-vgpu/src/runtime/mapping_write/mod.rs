@@ -716,7 +716,12 @@ pub fn resident_gpu_plane(m: &MappingEntry, width: u32, height: u32) -> Option<(
 /// BGRA8 frame lands in byte for byte - the mapping's plane is BGRA8 (no
 /// conversion), its rows are tight and it starts at the mapping's first byte -
 /// or `None` when the landing is anything else.
-pub(crate) fn lab_t2t_alias_window(state: &DeviceState, mapping_id: u32, width: u32, height: u32) -> Option<(Vec<u64>, u64)> {
+pub(crate) fn lab_t2t_alias_window(
+    state: &DeviceState,
+    mapping_id: u32,
+    width: u32,
+    height: u32,
+) -> Option<(Vec<u64>, u64)> {
     let m = state.mappings.get(&mapping_id)?;
     let (mw, mh, format) = mapping_write_geometry(m, width, height);
     if mw != width
@@ -853,9 +858,9 @@ fn write_bgra8_inner<M: HostMemory + HostOps>(
         );
     }
     lab_pay_px(mapping_id, src, src_stride, width, height); // TEMP (lab)
-    // Before the landing: the stamps below vouch for pages this write puts in
-    // place, and a generation read after it could fold in a guest write that
-    // landed meanwhile (see `GuestWriteObservation`).
+                                                            // Before the landing: the stamps below vouch for pages this write puts in
+                                                            // place, and a generation read after it could fold in a guest write that
+                                                            // landed meanwhile (see `GuestWriteObservation`).
     let seen = crate::runtime::mapper::observe_guest_write_gen(state, host, mapping_id);
     let Some(m) = state.mappings.get(&mapping_id) else {
         return refuse(mapping_id, SurfaceWriteRefusal::MappingAbsent);

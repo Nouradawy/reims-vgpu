@@ -1000,7 +1000,11 @@ pub fn display_refresh_hz() -> u32 {
             .ok()
             .and_then(|v| v.trim().parse::<u32>().ok())
             .filter(|hz| (30..=1000).contains(hz))
-            .unwrap_or(if cfg!(test) { DISPLAY_REFRESH_HZ } else { LAB_DEFAULT_REFRESH_HZ })
+            .unwrap_or(if cfg!(test) {
+                DISPLAY_REFRESH_HZ
+            } else {
+                LAB_DEFAULT_REFRESH_HZ
+            })
     })
 }
 

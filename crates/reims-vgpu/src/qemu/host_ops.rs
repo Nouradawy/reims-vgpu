@@ -170,9 +170,8 @@ pub struct ReimsVgpuHostOps {
         Option<unsafe extern "C" fn(ctx: *mut c_void, tokens: *const u64, count: usize)>,
     /// The device itself just stored into these pages of a tracked set: a
     /// hashed set takes their content as its baseline; see the ABI header.
-    pub guest_write_rebase: Option<
-        unsafe extern "C" fn(ctx: *mut c_void, token: u64, gpas: *const u64, count: usize),
-    >,
+    pub guest_write_rebase:
+        Option<unsafe extern "C" fn(ctx: *mut c_void, token: u64, gpas: *const u64, count: usize)>,
     /// Phase 4 narrow dirty tracking: host tells QEMU whether a token is actively tracked.
     pub set_dirty_tracking:
         Option<unsafe extern "C" fn(ctx: *mut c_void, token: u64, enabled: c_int)>,
@@ -1197,7 +1196,10 @@ mod lab_gen_prof {
     pub(super) fn on() -> bool {
         static ON: OnceLock<bool> = OnceLock::new();
         *ON.get_or_init(|| {
-            matches!(std::env::var("REIMS_VGPU_LAB_GEN_PROF").as_deref(), Ok("on"))
+            matches!(
+                std::env::var("REIMS_VGPU_LAB_GEN_PROF").as_deref(),
+                Ok("on")
+            )
         })
     }
 
@@ -1209,13 +1211,12 @@ mod lab_gen_prof {
         static SITES: OnceLock<Mutex<HashMap<(&'static str, u32), Names>>> = OnceLock::new();
         let map = SITES.get_or_init(|| Mutex::new(HashMap::new()));
         let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
-        *map.entry((site.file(), site.line() | if tag.is_empty() { 0 } else { 1 << 31 })).or_insert_with(|| {
-            let parts: Vec<&str> = site
-                .file()
-                .split(['/', '\\'])
-                .rev()
-                .take(2)
-                .collect();
+        *map.entry((
+            site.file(),
+            site.line() | if tag.is_empty() { 0 } else { 1 << 31 },
+        ))
+        .or_insert_with(|| {
+            let parts: Vec<&str> = site.file().split(['/', '\\']).rev().take(2).collect();
             let file: String = parts
                 .iter()
                 .rev()
@@ -1223,7 +1224,13 @@ mod lab_gen_prof {
                 .collect::<Vec<_>>()
                 .join("_")
                 .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() {
+                        c.to_ascii_lowercase()
+                    } else {
+                        '_'
+                    }
+                })
                 .collect();
             let base = format!("lab_gw{tag}_{file}_{}", site.line());
             (
@@ -1630,7 +1637,9 @@ mod tests {
         assert_eq!(q.len(), 3, "gfx pulse + iosfc pulse + one cursor");
         assert!(q.iter().any(|a| a.kind == HostActionKind::IrqGfxPulse));
         assert!(q.iter().any(|a| a.kind == HostActionKind::IrqIosfcPulse));
-        assert!(q.iter().any(|a| a.kind == HostActionKind::CursorUpdate && a.a0 == 30));
+        assert!(q
+            .iter()
+            .any(|a| a.kind == HostActionKind::CursorUpdate && a.a0 == 30));
         drop(q);
         assert_eq!(actions.len(), 1, "scanout stays on the lock-owning rail");
         assert_eq!(actions[0].kind, HostActionKind::ScanoutUpdate);

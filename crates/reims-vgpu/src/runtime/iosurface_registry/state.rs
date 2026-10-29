@@ -111,7 +111,10 @@ impl IntoIterator for ActionList {
     type IntoIter = ActionListIter;
 
     fn into_iter(self) -> Self::IntoIter {
-        ActionListIter { list: self, index: 0 }
+        ActionListIter {
+            list: self,
+            index: 0,
+        }
     }
 }
 
@@ -137,7 +140,10 @@ impl Iterator for ActionListIter {
 /// Pure transition function: computes next state and commanded actions.
 ///
 /// On illegal transitions, returns an Err with a typed refusal slug.
-pub fn transition(state: PlaneState, event: PlaneEvent) -> Result<(PlaneState, ActionList), &'static str> {
+pub fn transition(
+    state: PlaneState,
+    event: PlaneEvent,
+) -> Result<(PlaneState, ActionList), &'static str> {
     let mut actions = ActionList::empty();
 
     match (state, event) {
@@ -167,9 +173,7 @@ pub fn transition(state: PlaneState, event: PlaneEvent) -> Result<(PlaneState, A
         (PlaneState::Created, PlaneEvent::ReadbackCompleted) => {
             Err("iosurface_state_illegal_readback_when_created")
         }
-        (PlaneState::Created, PlaneEvent::GpuDrained) => {
-            Ok((PlaneState::Created, actions))
-        }
+        (PlaneState::Created, PlaneEvent::GpuDrained) => Ok((PlaneState::Created, actions)),
 
         // --- GpuAuthoritative ---
         (PlaneState::GpuAuthoritative, PlaneEvent::GpuWrite) => {
@@ -227,9 +231,7 @@ pub fn transition(state: PlaneState, event: PlaneEvent) -> Result<(PlaneState, A
         (PlaneState::CpuDirty, PlaneEvent::ReadbackCompleted) => {
             Err("iosurface_state_illegal_readback_when_cpudirty")
         }
-        (PlaneState::CpuDirty, PlaneEvent::GpuDrained) => {
-            Ok((PlaneState::CpuDirty, actions))
-        }
+        (PlaneState::CpuDirty, PlaneEvent::GpuDrained) => Ok((PlaneState::CpuDirty, actions)),
 
         // --- Syncing ---
         (PlaneState::Syncing, PlaneEvent::UploadCompleted) => {
@@ -257,9 +259,7 @@ pub fn transition(state: PlaneState, event: PlaneEvent) -> Result<(PlaneState, A
             actions.push(Action::DeferFree);
             Ok((PlaneState::Released, actions))
         }
-        (PlaneState::Syncing, PlaneEvent::GpuDrained) => {
-            Ok((PlaneState::Syncing, actions))
-        }
+        (PlaneState::Syncing, PlaneEvent::GpuDrained) => Ok((PlaneState::Syncing, actions)),
 
         // --- Released ---
         (PlaneState::Released, PlaneEvent::GpuDrained) => {
@@ -270,9 +270,7 @@ pub fn transition(state: PlaneState, event: PlaneEvent) -> Result<(PlaneState, A
         | (PlaneState::Released, PlaneEvent::GpuReadRequest) => {
             Err("iosurface_released_write_after_release")
         }
-        (PlaneState::Released, _) => {
-            Err("iosurface_state_illegal_transition_on_released")
-        }
+        (PlaneState::Released, _) => Err("iosurface_state_illegal_transition_on_released"),
     }
 }
 
@@ -345,8 +343,7 @@ mod tests {
 
     #[test]
     fn syncing_to_gpu_authoritative_on_upload_completed() {
-        let (next, actions) =
-            transition(PlaneState::Syncing, PlaneEvent::UploadCompleted).unwrap();
+        let (next, actions) = transition(PlaneState::Syncing, PlaneEvent::UploadCompleted).unwrap();
         assert_eq!(next, PlaneState::GpuAuthoritative);
         assert!(actions.contains(Action::DirectBind));
     }

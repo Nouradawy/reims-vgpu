@@ -629,7 +629,10 @@ mod tests {
         assert!(b.whole(1, 1).is_some(), "adjacent range, no overlap");
         b.retire_range(1, 0x13fff, 1);
         assert!(b.whole(1, 1).is_none(), "the last byte moved");
-        assert!(b.whole(2, 1).is_some(), "another task's same range survives");
+        assert!(
+            b.whole(2, 1).is_some(),
+            "another task's same range survives"
+        );
 
         b.retire_ref(1, 2);
         assert!(b.whole(1, 2).is_none());

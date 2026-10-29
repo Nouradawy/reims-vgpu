@@ -163,7 +163,9 @@ pub fn append_null_textures(
 
 /// Provision and unpack argument buffer embedded textures from reflected `EmbeddedArgBufferTexture`
 /// interface descriptors. Ensures descriptors are completely satisfied for the Vulkan pipeline.
-pub fn append_embedded_arg_buffer_textures<M: crate::runtime::host::HostMemory + crate::runtime::host::HostOps>(
+pub fn append_embedded_arg_buffer_textures<
+    M: crate::runtime::host::HostMemory + crate::runtime::host::HostOps,
+>(
     state: &crate::model::DeviceState,
     host: &M,
     task_id: u32,
@@ -179,11 +181,14 @@ pub fn append_embedded_arg_buffer_textures<M: crate::runtime::host::HostMemory +
         let Some(descriptor) = resource.descriptor else {
             continue;
         };
-        let binding = descriptor.binding.checked_add(if fragment_relocated {
-            FRAG_SAMPLED_RESOURCE_BINDING_OFFSET
-        } else {
-            0
-        }).unwrap_or(descriptor.binding);
+        let binding = descriptor
+            .binding
+            .checked_add(if fragment_relocated {
+                FRAG_SAMPLED_RESOURCE_BINDING_OFFSET
+            } else {
+                0
+            })
+            .unwrap_or(descriptor.binding);
 
         if images.iter().any(|image| image.binding == binding) {
             continue;

@@ -16,15 +16,15 @@ pub(crate) use regs::*;
 // `mod`, so this is the only path those links can name — and rustc's
 // unused-import lint cannot see a doc link, so it will call this dead.
 pub use state::{
-    Acted, BackingWalk, ChannelRing, ComputeStorageResidencyKey, CursorMirror, CursorState, Declaration, DeviceId,
-    DeviceState, ExecFault, FailEvent, GfxRegs, GuestLinearMemo, GuestWriteObservation, GvaBacking,
-    GvaEvictionWitness, GvaHostView, HostLinearTexture, HostSurface, MapperCapture, MappingEntry,
-    PacketFault, PresentBacking, PresentState, RailDeviceState, RailResourceState,
-    RenderFlushWitness, ResourceValidity, StampPublication, StorageIncarnation, SurfaceWriteKind,
-    TaskEntry, TaskReferenceStates, TaskResource, TaskResourceLifetimeRef, TaskSamplerState,
-    TaskTable, UnimplementedCommand, FENCE_DOMAIN_BLIT, FENCE_DOMAIN_COMPUTE, FENCE_DOMAIN_EVENT,
-    bump_names_gen, LAB_NAMES_GEN,
-    FENCE_DOMAIN_RENDER, GVA_ENCODE_CACHE_BYTE_CAP, GVA_EVICTION_WITNESS_KEYS,
+    bump_names_gen, Acted, BackingWalk, ChannelRing, ComputeStorageResidencyKey, CursorMirror,
+    CursorState, Declaration, DeviceId, DeviceState, ExecFault, FailEvent, GfxRegs,
+    GuestLinearMemo, GuestWriteObservation, GvaBacking, GvaEvictionWitness, GvaHostView,
+    HostLinearTexture, HostSurface, MapperCapture, MappingEntry, PacketFault, PresentBacking,
+    PresentState, RailDeviceState, RailResourceState, RenderFlushWitness, ResourceValidity,
+    StampPublication, StorageIncarnation, SurfaceWriteKind, TaskEntry, TaskReferenceStates,
+    TaskResource, TaskResourceLifetimeRef, TaskSamplerState, TaskTable, UnimplementedCommand,
+    FENCE_DOMAIN_BLIT, FENCE_DOMAIN_COMPUTE, FENCE_DOMAIN_EVENT, FENCE_DOMAIN_RENDER,
+    GVA_ENCODE_CACHE_BYTE_CAP, GVA_EVICTION_WITNESS_KEYS, LAB_NAMES_GEN,
 };
 
 use crate::backend::Backend;

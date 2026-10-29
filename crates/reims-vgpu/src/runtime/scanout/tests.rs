@@ -1456,7 +1456,9 @@ fn a_field_row_follows_the_page_list_and_skips_only_unreadable_texels() {
     // Surface page 0 is GPA 0x5000, page 1 is GPA 0x9000: not adjacent.
     let map = [0x5000u64, 0x9000, 0xd000];
     for (i, &gpa) in map.iter().enumerate() {
-        let bytes: Vec<u8> = (0..page).map(|b| (i as u8) << 6 | (b as u8 & 0x3f)).collect();
+        let bytes: Vec<u8> = (0..page)
+            .map(|b| (i as u8) << 6 | (b as u8 & 0x3f))
+            .collect();
         host.write_gpa(gpa, &bytes).unwrap();
     }
     let gpa_at = |off: u64| map.get((off / page) as usize).map(|&g| g + off % page);

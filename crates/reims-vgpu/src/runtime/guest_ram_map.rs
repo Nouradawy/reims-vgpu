@@ -511,7 +511,9 @@ pub fn surface_write_refusal_for_mapping(
                 return Some(report_once(MapRefusal::WritesNarrowed));
             }
             if m.condemned_entries.is_some() || !m.mapped {
-                crate::runtime::drain::note_store_route("surface_write_narrowed_condemned_or_unmapped");
+                crate::runtime::drain::note_store_route(
+                    "surface_write_narrowed_condemned_or_unmapped",
+                );
                 return Some(report_once(MapRefusal::WritesNarrowed));
             }
             if m.scanout_presented {
@@ -1874,6 +1876,9 @@ mod incarnation_writes_tests {
         m.released_since_resolve = true;
         state.mappings.insert(77, m);
         assert!(state.mappings[&77].released_since_resolve);
-        assert!(state.mappings[&77].ever_released, "the sticky flag is untouched");
+        assert!(
+            state.mappings[&77].ever_released,
+            "the sticky flag is untouched"
+        );
     }
 }

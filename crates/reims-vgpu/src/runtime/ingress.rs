@@ -632,9 +632,12 @@ impl<M: crate::runtime::host::HostMemory> TaskNamespaces for XmemoNames<'_, M> {
         task: reims_vgpu_core::identity::TaskId,
         object_ref: u32,
     ) -> Option<reims_vgpu_core::identity::ResourceId> {
-        if let Some(name) =
-            crate::runtime::exec::walk_memo::xmemo_name(self.state, self.session, task.0, object_ref)
-        {
+        if let Some(name) = crate::runtime::exec::walk_memo::xmemo_name(
+            self.state,
+            self.session,
+            task.0,
+            object_ref,
+        ) {
             return Some(name);
         }
         let name = self.inner.resource(task, object_ref);
@@ -740,9 +743,27 @@ pub fn device_packet<M: crate::runtime::host::HostMemory>(
             session,
             inner: &names,
         };
-        device_packet_with(state, host, fifo, session, completion_slot, drained, reads, &memoed)
+        device_packet_with(
+            state,
+            host,
+            fifo,
+            session,
+            completion_slot,
+            drained,
+            reads,
+            &memoed,
+        )
     } else {
-        device_packet_with(state, host, fifo, session, completion_slot, drained, reads, &names)
+        device_packet_with(
+            state,
+            host,
+            fifo,
+            session,
+            completion_slot,
+            drained,
+            reads,
+            &names,
+        )
     }
 }
 
@@ -784,7 +805,16 @@ pub fn device_packet_ahead_named<M: crate::runtime::host::HostMemory>(
         missed: std::cell::Cell::new(false),
         read: std::cell::RefCell::new(Vec::new()),
     };
-    let built = device_packet_with(state, host, fifo, session, completion_slot, drained, reads, &names);
+    let built = device_packet_with(
+        state,
+        host,
+        fifo,
+        session,
+        completion_slot,
+        drained,
+        reads,
+        &names,
+    );
     (!names.missed.get()).then(|| (built, names.read.into_inner()))
 }
 

@@ -155,7 +155,9 @@ impl Queue {
                 break;
             }
             let total = u32::from_le_bytes(
-                hdr[PACKET_TOTAL_SIZE..PACKET_TOTAL_SIZE + 4].try_into().unwrap_or([0; 4]),
+                hdr[PACKET_TOTAL_SIZE..PACKET_TOTAL_SIZE + 4]
+                    .try_into()
+                    .unwrap_or([0; 4]),
             );
             if total < PACKET_HEADER_LEN || total > ring.length || available < total {
                 break; // malformed or partial: left for the drain's reader
@@ -172,7 +174,10 @@ impl Queue {
             head = head.wrapping_add(total);
             moved += total as usize;
         }
-        census::QMAX.fetch_max(self.bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        census::QMAX.fetch_max(
+            self.bytes.len() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         if let Some(left) = published_byte_count(head, tail, ring.length) {
             census::LEFT_MAX.fetch_max(u64::from(left), std::sync::atomic::Ordering::Relaxed);
         }
@@ -230,7 +235,9 @@ mod census {
         let now = crate::observe::elapsed_ms() as u64;
         let last = LAST_MS.load(Relaxed);
         if now.saturating_sub(last) < 1000
-            || LAST_MS.compare_exchange(last, now, Relaxed, Relaxed).is_err()
+            || LAST_MS
+                .compare_exchange(last, now, Relaxed, Relaxed)
+                .is_err()
         {
             return;
         }
@@ -312,7 +319,11 @@ pub fn heartbeat<H: HostMemory + HostOps>(device: u64, host: &mut H, page_size: 
 
 /// Drop `device`'s queue for `channel` (its ring was torn down).
 pub fn reset(device: u64, channel: u32) {
-    if let Some(v) = QUEUES.lock().as_ref().and_then(|m| m.get(&(device, channel))) {
+    if let Some(v) = QUEUES
+        .lock()
+        .as_ref()
+        .and_then(|m| m.get(&(device, channel)))
+    {
         v.lock().disarm();
     }
 }

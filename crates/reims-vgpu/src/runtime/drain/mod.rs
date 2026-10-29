@@ -2487,7 +2487,12 @@ fn lab_exec_write_tokens(
         if let ResolvedOperation::Render(op) = &record.op {
             match op {
                 RenderOp::BindTextures { entries, .. } => {
-                    for b in work.arenas.object_bindings.get(entries.range()).unwrap_or(&[]) {
+                    for b in work
+                        .arenas
+                        .object_bindings
+                        .get(entries.range())
+                        .unwrap_or(&[])
+                    {
                         if let Some(object) = b.object {
                             name(object.slot.0, names);
                         }
@@ -2495,7 +2500,12 @@ fn lab_exec_write_tokens(
                 }
                 RenderOp::BindBuffers { entries, .. }
                 | RenderOp::BindBuffersWithStride { entries, .. } => {
-                    for b in work.arenas.buffer_bindings.get(entries.range()).unwrap_or(&[]) {
+                    for b in work
+                        .arenas
+                        .buffer_bindings
+                        .get(entries.range())
+                        .unwrap_or(&[])
+                    {
                         if let Some(buffer) = b.buffer {
                             name(buffer.slot.0, names);
                         }
@@ -2613,7 +2623,8 @@ pub(crate) fn lookahead_job(
         return None;
     }
     let host = env.host();
-    let (submission, _exec) = crate::runtime::exec::read_exec_submission(st, &host, &item.packet.payload);
+    let (submission, _exec) =
+        crate::runtime::exec::read_exec_submission(st, &host, &item.packet.payload);
     let submission = submission?;
     let built = crate::runtime::ingress::device_packet_ahead_named(
         st,
@@ -2697,7 +2708,9 @@ fn lookahead_admission_g<H: HostMemory>(
     let session = state.session_generation();
     let flight = AHEAD_FLIGHTS.with(|q| {
         let mut q = q.borrow_mut();
-        let at = q.iter().position(|e| e.channel == channel_id && e.head == head)?;
+        let at = q
+            .iter()
+            .position(|e| e.channel == channel_id && e.head == head)?;
         // Same-channel flights queued before this head belong to positions
         // already admitted without them.
         let mut i = 0;
@@ -2714,7 +2727,9 @@ fn lookahead_admission_g<H: HostMemory>(
         if dropped > 0 {
             note_store_route_n("lookahead_skipped", dropped);
         }
-        let at = q.iter().position(|e| e.channel == channel_id && e.head == head)?;
+        let at = q
+            .iter()
+            .position(|e| e.channel == channel_id && e.head == head)?;
         q.remove(at)
     });
     let built = flight.and_then(|f| {
@@ -2827,7 +2842,8 @@ pub(crate) fn lookahead_deposit(items: Vec<AheadItem>, built: Vec<Option<AheadPa
         for (item, b) in items.into_iter().zip(built) {
             if let Some(b) = b {
                 n += 1;
-                l.ready.push_back((item.channel, item.head, item.packet.payload, b));
+                l.ready
+                    .push_back((item.channel, item.head, item.packet.payload, b));
             }
         }
         while l.ready.len() > 64 {
@@ -2857,7 +2873,10 @@ fn lookahead_admission<H: HostMemory>(
         let mut l = l.borrow_mut();
         // Builds behind this head in ring order belong to positions already
         // admitted without them.
-        let at = l.ready.iter().position(|e| e.0 == channel_id && e.1 == head);
+        let at = l
+            .ready
+            .iter()
+            .position(|e| e.0 == channel_id && e.1 == head);
         let (_, _, payload, b) = match at {
             Some(i) => {
                 let dropped = i as u64;
@@ -2894,7 +2913,9 @@ fn lookahead_admission<H: HostMemory>(
     LOOKAHEAD.with(|l| {
         let mut l = l.borrow_mut();
         let known = |l: &Lookahead, h: u32| {
-            l.pending.iter().any(|p| p.channel == channel_id && p.head == h)
+            l.pending
+                .iter()
+                .any(|p| p.channel == channel_id && p.head == h)
                 || l.ready.iter().any(|e| e.0 == channel_id && e.1 == h)
         };
         let k = lookahead_k();
@@ -3033,7 +3054,11 @@ fn ingress_ahead_take<H: HostMemory + HostOps>(
         Some(built)
     });
     if let Some(built) = hit {
-        note_store_route(if built.is_some() { "ingress_ahead_hit" } else { "ingress_ahead_hit_none" });
+        note_store_route(if built.is_some() {
+            "ingress_ahead_hit"
+        } else {
+            "ingress_ahead_hit_none"
+        });
         return built;
     }
     // A fresh fork: this packet and the EXECs behind it.
@@ -3149,13 +3174,15 @@ fn admit_and_park<H: HostMemory + HostOps>(
 
     if g.sh().lab_hold_since.lock().is_some() {
         note_store_route("lab_hold_admitted");
-        note_store_route(if packet.opcode == CHILD_OP_DISPLAY_SWAP
-            || packet.opcode == CHILD_OP_DISPLAY_TRANSACTION2
-        {
-            "lab_hold_admitted_present"
-        } else {
-            "lab_hold_admitted_other"
-        });
+        note_store_route(
+            if packet.opcode == CHILD_OP_DISPLAY_SWAP
+                || packet.opcode == CHILD_OP_DISPLAY_TRANSACTION2
+            {
+                "lab_hold_admitted_present"
+            } else {
+                "lab_hold_admitted_other"
+            },
+        );
     }
     // TEMP (lab, INGRESS_AHEAD / LOOKAHEAD): the helper's read and packet,
     // when the session it was built under is still this one.
@@ -3176,7 +3203,11 @@ fn admit_and_park<H: HostMemory + HostOps>(
         }
         None => (arrival_work_g(g, host, fifo, &packet), None),
     };
-    lab_chan::note_admit(fifo.domain().0, arrived.submission.as_ref().map(|s| s.task_id()), packet.opcode);
+    lab_chan::note_admit(
+        fifo.domain().0,
+        arrived.submission.as_ref().map(|s| s.task_id()),
+        packet.opcode,
+    );
     lab_chan::lat_opcode(fifo.domain().0, packet.opcode);
     lab_chan::lat_admit(
         fifo.domain().0,
@@ -3333,7 +3364,10 @@ fn admit_and_park<H: HostMemory + HostOps>(
                         .and_then(|work| work.usage_census.first_unanswered_pipeline)
                     {
                         note_store_route("lab_rewalk_still_unanswered");
-                        if crate::observe::first_sight("lab_rewalk_still_unanswered", u64::from(id.slot.0)) {
+                        if crate::observe::first_sight(
+                            "lab_rewalk_still_unanswered",
+                            u64::from(id.slot.0),
+                        ) {
                             crate::observe::fail(format!(
                                 "lab_rewalk_still_unanswered slot={} gen={} task={:?} model_pipeline={}                                  published={} wanted={}",
                                 id.slot.0,
@@ -3633,9 +3667,7 @@ fn work_pipeline_state(
         .payload
         .exec()
         .map_or_else(Default::default, |work| work.pipelines);
-    state
-        .pipeline_state_of(scope.id(id))
-        .unwrap_or("unleased")
+    state.pipeline_state_of(scope.id(id)).unwrap_or("unleased")
 }
 
 thread_local! {
@@ -3664,7 +3696,8 @@ pub(crate) fn lab_note_memo_skip(state: &DeviceState, task_id: u32, pipeline_ref
     } else {
         "lab_memo_skip_unpublished"
     });
-    if !published && crate::observe::first_sight("lab_memo_skip_unpublished", u64::from(name.slot.0))
+    if !published
+        && crate::observe::first_sight("lab_memo_skip_unpublished", u64::from(name.slot.0))
     {
         crate::observe::fail(format!(
             "lab_memo_skip_unpublished slot={} gen={} model_pipeline={}",
@@ -3770,7 +3803,9 @@ fn lab_dag_admit(
         };
         let key = match a.key {
             AccessKey::Range(k, r) => format!("R{}:{}+{}", k.backing.0, r.offset, r.length),
-            AccessKey::Subresource(k, s) => format!("S{}:{}.{}", k.backing.0, s.base_level, s.plane),
+            AccessKey::Subresource(k, s) => {
+                format!("S{}:{}.{}", k.backing.0, s.base_level, s.plane)
+            }
             AccessKey::Whole(k) => format!("W{}", k.backing.0),
             AccessKey::Heap(h) => format!("H{h:?}"),
             AccessKey::DomainOnly => {
@@ -3911,7 +3946,10 @@ fn settle_model_work<H: HostMemory + HostOps>(state: &mut DeviceState, host: &mu
 }
 
 #[allow(unused_assignments)]
-fn settle_model_work_g<H: HostMemory + HostOps>(g: &mut crate::runtime::par::Gate<'_, '_>, host: &mut H) {
+fn settle_model_work_g<H: HostMemory + HostOps>(
+    g: &mut crate::runtime::par::Gate<'_, '_>,
+    host: &mut H,
+) {
     // The list a pass walks is the one it began with, because running a position
     // can settle other work (a child packet's arm reaches `drain_other`) and the
     // store changes under it. It is filled into a buffer this thread keeps
@@ -3954,7 +3992,8 @@ fn settle_model_work_g<H: HostMemory + HostOps>(g: &mut crate::runtime::par::Gat
             if g.sh().parked.lock().opcode(ingress) == Some(CHILD_OP_EXEC_INDIRECT2) {
                 lab_preempt_control_g(g, host);
             }
-            let Some(work) = g.sh()
+            let Some(work) = g
+                .sh()
                 .parked
                 .lock()
                 .release(ingress, crate::runtime::parked::Release::Ready)
@@ -4019,7 +4058,10 @@ fn declined_by_the_device_g(
 
 /// TEMP (lab, FRAME_GATE): [`lab_preempt_control`] on the gate - the ring
 /// check is shared; a control ring with work is drained on the gate.
-fn lab_preempt_control_g<H: HostMemory + HostOps>(g: &mut crate::runtime::par::Gate<'_, '_>, host: &mut H) {
+fn lab_preempt_control_g<H: HostMemory + HostOps>(
+    g: &mut crate::runtime::par::Gate<'_, '_>,
+    host: &mut H,
+) {
     if !lab_chan::preempt_on() || lab_chan::in_preempt() {
         return;
     }
@@ -4027,7 +4069,11 @@ fn lab_preempt_control_g<H: HostMemory + HostOps>(g: &mut crate::runtime::par::G
         return;
     }
     let open = g.sh().drainable_child_mask();
-    let channels: &[u32] = if lab_chan::preempt_display() { &[2, 4, 5] } else { &[2, 4] };
+    let channels: &[u32] = if lab_chan::preempt_display() {
+        &[2, 4, 5]
+    } else {
+        &[2, 4]
+    };
     for &ch in channels {
         let bit = 1u32 << ch;
         if open & bit == 0 || g.sh().draining_mask.get() & bit != 0 {
@@ -4214,7 +4260,10 @@ fn pump_translations<H: HostMemory + HostOps>(state: &DeviceState, host: &H) {
         // `parked_translations_finished = 282 172` against 137 pipelines
         // declared and readied, which is the same handful of plans re-walked
         // thousands of times.
-        if leases.iter().all(|&lease| state.pipeline_is_ready(task, lease)) {
+        if leases
+            .iter()
+            .all(|&lease| state.pipeline_is_ready(task, lease))
+        {
             note_store_route("parked_translations_already_ready");
             continue;
         }
@@ -4380,8 +4429,15 @@ fn run_parked_packet_g<H: HostMemory + HostOps>(
         // down to its walk; everything else is the exclusive path as before.
         if work.packet().opcode == CHILD_OP_EXEC_INDIRECT2 && framed {
             note_packet_domain_definition(g.sh(), domain, work.packet().opcode);
-            note_packet_class(reims_vgpu_protocol::packets::Channel::Child, work.packet().opcode);
-            note_lifetime_task_definition(g.sh(), reims_vgpu_protocol::packets::Channel::Child, work.packet());
+            note_packet_class(
+                reims_vgpu_protocol::packets::Channel::Child,
+                work.packet().opcode,
+            );
+            note_lifetime_task_definition(
+                g.sh(),
+                reims_vgpu_protocol::packets::Channel::Child,
+                work.packet(),
+            );
             let _ = exec_child_packet_g(g, host, domain, work.packet(), work.retained());
         } else {
             let _ = process_child_packet(g.st(), host, domain, work.packet(), work.retained());
@@ -4397,10 +4453,14 @@ fn run_parked_packet_g<H: HostMemory + HostOps>(
             let state = g.sh();
             if state.lab_hold_since.lock().is_some() {
                 state.lab_hold_packets.set(state.lab_hold_packets.get() + 1);
-                state.lab_hold_exec_us.set(state.lab_hold_exec_us.get() + ran_us);
+                state
+                    .lab_hold_exec_us
+                    .set(state.lab_hold_exec_us.get() + ran_us);
             } else if matches!(
                 work.packet().opcode,
-                CHILD_OP_DISPLAY_SWAP | CHILD_OP_DISPLAY_TRANSACTION2 | CHILD_OP_DISPLAY_TRANSACTION3
+                CHILD_OP_DISPLAY_SWAP
+                    | CHILD_OP_DISPLAY_TRANSACTION2
+                    | CHILD_OP_DISPLAY_TRANSACTION3
             ) {
                 *state.lab_hold_since.lock() = Some(std::time::Instant::now());
                 state.lab_hold_packets.set(0);
@@ -4496,11 +4556,7 @@ fn run_parked_packet_g<H: HostMemory + HostOps>(
 /// is worth a line is the *withdrawal* — a lease that was `Ready` and is not
 /// any more — and `PipelineTable::advance` is what distinguishes them, so the
 /// counter is read off the table's own census rather than guessed here.
-fn withdraw_lease(
-    state: &DeviceState,
-    task: u32,
-    lease: reims_vgpu_core::identity::ResourceId,
-) {
+fn withdraw_lease(state: &DeviceState, task: u32, lease: reims_vgpu_core::identity::ResourceId) {
     if state.withdraw_pipeline(task, lease) {
         note_store_route("pipeline_lease_withdrawn");
         if crate::observe::first_sight("pipeline_lease_withdrawn", u64::from(lease.slot.0)) {
@@ -5079,8 +5135,19 @@ pub(crate) fn flush_deferred_stamps<H: HostMemory + HostOps>(
 /// whether the drain blocked for it.
 fn note_stamp_held(at: std::time::Instant, blocked: bool) {
     let us = at.elapsed().as_micros() as u64;
-    note_store_route_us(if blocked { "stamp_held_block_us" } else { "stamp_held_us" }, us);
-    note_store_route(if blocked { "stamp_held_block_n" } else { "stamp_held_n" });
+    note_store_route_us(
+        if blocked {
+            "stamp_held_block_us"
+        } else {
+            "stamp_held_us"
+        },
+        us,
+    );
+    note_store_route(if blocked {
+        "stamp_held_block_n"
+    } else {
+        "stamp_held_n"
+    });
 }
 
 /// TEMP (lab, live `STAMP_SEQ=on|off`, else `REIMS_VGPU_LAB_STAMP_SEQ=on`):
@@ -5149,11 +5216,13 @@ fn write_stamp_now<H: HostMemory + HostOps>(
         // TEMP (lab): a guest thread is blocked on this control word; the open
         // batch it is parked behind would otherwise wait for the tranche's end.
         if lab_ctrl_stamp::current() != lab_ctrl_stamp::Kind::None {
-            note_store_route(if crate::backend::selected().flush_batch_for_waiting_stamp(index) {
-                "lab_ctrl_stamp_flushed_batch"
-            } else {
-                "lab_ctrl_stamp_queued_in_flight"
-            });
+            note_store_route(
+                if crate::backend::selected().flush_batch_for_waiting_stamp(index) {
+                    "lab_ctrl_stamp_flushed_batch"
+                } else {
+                    "lab_ctrl_stamp_queued_in_flight"
+                },
+            );
         }
         return;
     }
@@ -5295,8 +5364,8 @@ pub(crate) mod lab_irq_urgent {
     fn on() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ON.get_or_init(|| {
-            let on = std::env::var("REIMS_VGPU_LAB_IRQ_URGENT")
-                .is_ok_and(|v| v == "1" || v == "on");
+            let on =
+                std::env::var("REIMS_VGPU_LAB_IRQ_URGENT").is_ok_and(|v| v == "1" || v == "on");
             crate::observe::off(format!("lab_irq_urgent on={on}"));
             on
         })
@@ -6340,7 +6409,10 @@ pub fn drain_main_fifo<H: HostMemory + HostOps>(state: &mut DeviceState, host: &
 }
 
 #[allow(unused_assignments)]
-fn drain_main_fifo_g<H: HostMemory + HostOps>(g: &mut crate::runtime::par::Gate<'_, '_>, host: &mut H) {
+fn drain_main_fifo_g<H: HostMemory + HostOps>(
+    g: &mut crate::runtime::par::Gate<'_, '_>,
+    host: &mut H,
+) {
     let ring_size = main_ring_data_size(g.sh().gfx.fifo_length, g.sh().gfx.fifo_start);
     if ring_size == 0 || g.sh().gfx.fifo_base_page == 0 {
         g.st().pending.main_drain = false;
@@ -6358,7 +6430,8 @@ fn drain_main_fifo_g<H: HostMemory + HostOps>(g: &mut crate::runtime::par::Gate<
         // used to load it again, which was the same value each time — nothing
         // advances the consumer pointer until this loop stores to it — read
         // seven ways.
-        let head = g.sh()
+        let head = g
+            .sh()
             .gfx
             .fifo_read
             .load(std::sync::atomic::Ordering::Acquire);
@@ -6373,7 +6446,8 @@ fn drain_main_fifo_g<H: HostMemory + HostOps>(g: &mut crate::runtime::par::Gate<
                 break;
             }
             Arrival::Fault(fault) => {
-                g.sh().record_fail(FailEvent::MalformedRootPacket { fault, head });
+                g.sh()
+                    .record_fail(FailEvent::MalformedRootPacket { fault, head });
                 break;
             }
             Arrival::Packet(packet) => {
@@ -7317,10 +7391,12 @@ fn present_named_mapping<H: HostMemory + HostOps>(
                 // was lost. `present_black` below is the alarm. Wherever the
                 // window presents from the engine's own device this is the
                 // normal outcome of every present.
-                crate::observe::verbose(|| format!(
-                    "present_content_unsampled mid={mapping} {w}x{h} gen={gen} \
+                crate::observe::verbose(|| {
+                    format!(
+                        "present_content_unsampled mid={mapping} {w}x{h} gen={gen} \
                      (a resident carried the frame; no CPU pixels to judge)"
-                ));
+                    )
+                });
             } else if verdict == PresentContentVerdict::Black {
                 // Both lines name the mapping the guest asked us to show and say
                 // it came out black. They deliberately do not go looking for a
@@ -7355,12 +7431,14 @@ fn present_named_mapping<H: HostMemory + HostOps>(
         // not.
         // One line per accepted present, verbose-only. `present_enqueue` carried
         // the same fields through the always-on sink alongside it.
-        crate::observe::verbose(|| format!(
-            "present paint mid={mapping} {w}x{h} gen={gen} encoded={} retain={} unpainted={}",
-            encoded as u8,
-            state.present.frame_valid as u8,
-            state.present.unpainted_presents.saturating_add(1)
-        ));
+        crate::observe::verbose(|| {
+            format!(
+                "present paint mid={mapping} {w}x{h} gen={gen} encoded={} retain={} unpainted={}",
+                encoded as u8,
+                state.present.frame_valid as u8,
+                state.present.unpainted_presents.saturating_add(1)
+            )
+        });
         // Account the accepted present. The retain-vs-DisplaySwap (mapping,
         // generation) choice that used to be computed here addressed
         // `copy_to_bgra8`'s Unchanged/expected_generation checks on the QEMU
@@ -7844,29 +7922,32 @@ fn lab_park_land_for_map_family<H: HostMemory + HostOps>(
         return;
     }
     let reach: Option<Vec<u64>> = match family {
-        MapFamily::MapMemory2 | MapFamily::UnmapMemory => crate::protocol::fifo::decode_map_memory(&packet.payload)
-            .ok()
-            .map(|cmd| {
-                let mut pages = Vec::new();
-                crate::runtime::gva_mem::visit_task_gva_page_gpas(
-                    &*host,
-                    &state.tasks,
-                    cmd.task_id,
-                    cmd.gva,
-                    cmd.length,
-                    state.page_shift,
-                    &mut |gpa| {
-                        pages.push(gpa);
-                        true
-                    },
-                );
-                pages
-            })
-            .filter(|pages| !pages.is_empty()),
+        MapFamily::MapMemory2 | MapFamily::UnmapMemory => {
+            crate::protocol::fifo::decode_map_memory(&packet.payload)
+                .ok()
+                .map(|cmd| {
+                    let mut pages = Vec::new();
+                    crate::runtime::gva_mem::visit_task_gva_page_gpas(
+                        &*host,
+                        &state.tasks,
+                        cmd.task_id,
+                        cmd.gva,
+                        cmd.length,
+                        state.page_shift,
+                        &mut |gpa| {
+                            pages.push(gpa);
+                            true
+                        },
+                    );
+                    pages
+                })
+                .filter(|pages| !pages.is_empty())
+        }
         _ => None,
     };
     #[cfg(feature = "backend-vulkan")]
-    let lab_before = crate::runtime::render_writeback::vulkan::t2t_park::LANDED_N.load(std::sync::atomic::Ordering::Relaxed);
+    let lab_before = crate::runtime::render_writeback::vulkan::t2t_park::LANDED_N
+        .load(std::sync::atomic::Ordering::Relaxed);
     let lab_idx = match (family, &reach) {
         // A GPU address-space map: no page moves and no CPU view is made, and
         // every device reader of the pages lands or serves the frame itself.
@@ -7984,7 +8065,9 @@ fn apply_map_family<H: HostMemory + HostOps>(
         use crate::runtime::gva_mem::lab_tlb;
         match &notice {
             Some(n) => match state.tasks.get(n.task_id).filter(|t| t.directory_pfn != 0) {
-                Some(t) => lab_tlb::forget_range(t.directory_pfn, n.gva, n.length, state.page_shift),
+                Some(t) => {
+                    lab_tlb::forget_range(t.directory_pfn, n.gva, n.length, state.page_shift)
+                }
                 None => lab_tlb::new_epoch(),
             },
             // Invalidate/Synchronize resources and DeleteIOSurfaceBacking2
@@ -8141,18 +8224,22 @@ fn apply_map_family<H: HostMemory + HostOps>(
                 gva,
                 state.page_shift,
             );
-            crate::observe::verbose(|| format!(
+            crate::observe::verbose(|| {
+                format!(
                 "map_probe op={name} ch={channel_id} task={task_id} gva={gva:#x} len={length:#x} page_shift={} {walk}",
                 state.page_shift
-            ));
+            )
+            });
             // Periodic active-task census (every 32 map/unmap) for boot overview.
             state.map_family_events = state.map_family_events.saturating_add(1);
             if state.map_family_events == 1 || state.map_family_events.is_multiple_of(32) {
                 let census = crate::runtime::gva_mem::format_active_tasks(&state.tasks);
-                crate::observe::verbose(|| format!(
-                    "map_census n={} last_op={name} task={task_id} {census}",
-                    state.map_family_events
-                ));
+                crate::observe::verbose(|| {
+                    format!(
+                        "map_census n={} last_op={name} task={task_id} {census}",
+                        state.map_family_events
+                    )
+                });
             }
         });
         // RE (AppleParavirtMemoryMap): Unmap/Map only mutate the **task
@@ -8244,7 +8331,9 @@ fn apply_map_family<H: HostMemory + HostOps>(
         // Same obligation as the unmap arm, keyed by the mapping whose pages
         // are going back: a queued writeback into them must land first.
         settle_released_mapping(state, object_id);
-        if crate::runtime::lab_video::release_guards() && state.pending_writebacks.drop_mapping(object_id) {
+        if crate::runtime::lab_video::release_guards()
+            && state.pending_writebacks.drop_mapping(object_id)
+        {
             crate::runtime::drain::note_store_route("release_cancelled_writeback_debt");
         }
         if let Some(m) = state.mappings.get_mut(&object_id) {
@@ -8777,8 +8866,10 @@ fn process_child_packet<H: HostMemory + HostOps>(
             crate::backend::vulkan::engine::quiesce_guest_reads();
         }
     }
-    let iosurf_events_active = crate::config::read(crate::config::LAB_IOSURFACE_EVENTS).0 == crate::config::Switch::On
-        || crate::config::read(crate::config::LAB_IOSURFACE_REGISTRY_SHADOW).0 == crate::config::Switch::On;
+    let iosurf_events_active = crate::config::read(crate::config::LAB_IOSURFACE_EVENTS).0
+        == crate::config::Switch::On
+        || crate::config::read(crate::config::LAB_IOSURFACE_REGISTRY_SHADOW).0
+            == crate::config::Switch::On;
     match packet.opcode {
         CHILD_OP_DEFINE_TASK2 => {
             apply_define_task2(state, host, &packet.payload, Some(channel_id));
@@ -8901,14 +8992,16 @@ fn process_child_packet<H: HostMemory + HostOps>(
             let task = decoded
                 .task
                 .map_or_else(|| "-".to_string(), |task| format!("{task:#x}"));
-            crate::observe::verbose(|| format!(
-                "present_txn op={opcode:#x} ch={channel_id} pipe={} sid={mapping} task={task} \
+            crate::observe::verbose(|| {
+                format!(
+                    "present_txn op={opcode:#x} ch={channel_id} pipe={} sid={mapping} task={task} \
                  plen={} unpainted={} prior_present_mapping={}",
-                decoded.pipe,
-                packet.payload.len(),
-                state.present.unpainted_presents,
-                state.present.present_mapping
-            ));
+                    decoded.pipe,
+                    packet.payload.len(),
+                    state.present.unpainted_presents,
+                    state.present.present_mapping
+                )
+            });
             if present_named_mapping(state, host, channel_id, mapping)
                 == ChildPacketDisposition::Deferred
             {
@@ -9299,7 +9392,9 @@ fn process_child_packet<H: HostMemory + HostOps>(
         // Governed by CAP_IOSURFACE_EVENTS / REIMS_VGPU_LAB_IOSURFACE_EVENTS.
         CHILD_OP_IOSURF_CREATE if iosurf_events_active => {
             crate::runtime::drain::note_store_route("child_iosurf_create");
-            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfCreate::decode(&packet.payload) {
+            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfCreate::decode(
+                &packet.payload,
+            ) {
                 Some(msg) => {
                     let planes = (msg.plane_count as usize)
                         .min(reims_vgpu_protocol::iosurface_events::MAX_IOSURF_PLANES)
@@ -9321,9 +9416,12 @@ fn process_child_packet<H: HostMemory + HostOps>(
         }
         CHILD_OP_IOSURF_DESTROY if iosurf_events_active => {
             crate::runtime::drain::note_store_route("child_iosurf_destroy");
-            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfDestroy::decode(&packet.payload) {
+            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfDestroy::decode(
+                &packet.payload,
+            ) {
                 Some(msg) => {
-                    for plane in 0..reims_vgpu_protocol::iosurface_events::MAX_IOSURF_PLANES as u32 {
+                    for plane in 0..reims_vgpu_protocol::iosurface_events::MAX_IOSURF_PLANES as u32
+                    {
                         crate::runtime::iosurface_registry::shadow::note_shadow_event(
                             msg.surface_id,
                             plane,
@@ -9341,7 +9439,9 @@ fn process_child_packet<H: HostMemory + HostOps>(
         }
         CHILD_OP_IOSURF_USECOUNT if iosurf_events_active => {
             crate::runtime::drain::note_store_route("child_iosurf_usecount");
-            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfUsecount::decode(&packet.payload) {
+            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfUsecount::decode(
+                &packet.payload,
+            ) {
                 Some(_msg) => {
                     // Use-count updates do not alter plane residency directly (destroy does).
                 }
@@ -9355,12 +9455,14 @@ fn process_child_packet<H: HostMemory + HostOps>(
         }
         CHILD_OP_IOSURF_LOCK if iosurf_events_active => {
             crate::runtime::drain::note_store_route("child_iosurf_lock");
-            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfLock::decode(&packet.payload) {
+            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfLock::decode(&packet.payload)
+            {
                 Some(msg) => {
-                    let current_state = crate::runtime::iosurface_registry::shadow::with_shadow(|reg| {
-                        reg.query_state(msg.surface_id, 0)
-                    })
-                    .unwrap_or(crate::runtime::iosurface_registry::PlaneState::Created);
+                    let current_state =
+                        crate::runtime::iosurface_registry::shadow::with_shadow(|reg| {
+                            reg.query_state(msg.surface_id, 0)
+                        })
+                        .unwrap_or(crate::runtime::iosurface_registry::PlaneState::Created);
 
                     let action = crate::runtime::iosurface_registry::readback::evaluate_lock_sync(
                         msg.surface_id,
@@ -9392,11 +9494,17 @@ fn process_child_packet<H: HostMemory + HostOps>(
         }
         CHILD_OP_IOSURF_UNLOCK if iosurf_events_active => {
             crate::runtime::drain::note_store_route("child_iosurf_unlock");
-            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfUnlock::decode(&packet.payload) {
+            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfUnlock::decode(
+                &packet.payload,
+            ) {
                 Some(msg) => {
-                    let read_only = (msg.options & reims_vgpu_protocol::iosurface_events::IOSURF_LOCK_READ_ONLY) != 0;
+                    let read_only = (msg.options
+                        & reims_vgpu_protocol::iosurface_events::IOSURF_LOCK_READ_ONLY)
+                        != 0;
                     if !read_only {
-                        for plane in 0..reims_vgpu_protocol::iosurface_events::MAX_IOSURF_PLANES as u32 {
+                        for plane in
+                            0..reims_vgpu_protocol::iosurface_events::MAX_IOSURF_PLANES as u32
+                        {
                             crate::runtime::iosurface_registry::shadow::note_shadow_event(
                                 msg.surface_id,
                                 plane,
@@ -9417,19 +9525,23 @@ fn process_child_packet<H: HostMemory + HostOps>(
         }
         CHILD_OP_IOSURF_READBACK_REQ if iosurf_events_active => {
             crate::runtime::drain::note_store_route("child_iosurf_readback_req");
-            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfReadbackReq::decode(&packet.payload) {
+            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfReadbackReq::decode(
+                &packet.payload,
+            ) {
                 Some(msg) => {
-                    let current_state = crate::runtime::iosurface_registry::shadow::with_shadow(|reg| {
-                        reg.query_state(msg.surface_id, msg.plane)
-                    })
-                    .unwrap_or(crate::runtime::iosurface_registry::PlaneState::Created);
+                    let current_state =
+                        crate::runtime::iosurface_registry::shadow::with_shadow(|reg| {
+                            reg.query_state(msg.surface_id, msg.plane)
+                        })
+                        .unwrap_or(crate::runtime::iosurface_registry::PlaneState::Created);
 
-                    let action = crate::runtime::iosurface_registry::readback::evaluate_readback_req(
-                        msg.surface_id,
-                        msg.plane,
-                        current_state,
-                        msg.sequence,
-                    );
+                    let action =
+                        crate::runtime::iosurface_registry::readback::evaluate_readback_req(
+                            msg.surface_id,
+                            msg.plane,
+                            current_state,
+                            msg.sequence,
+                        );
                     if let crate::runtime::iosurface_registry::readback::ReadbackAction::ScheduleReadback {
                         surface_id,
                         plane,
@@ -9458,7 +9570,9 @@ fn process_child_packet<H: HostMemory + HostOps>(
         }
         CHILD_OP_IOSURF_READBACK_DONE if iosurf_events_active => {
             crate::runtime::drain::note_store_route("child_iosurf_readback_done");
-            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfReadbackDone::decode(&packet.payload) {
+            match reims_vgpu_protocol::iosurface_events::ReimsMsgIosurfReadbackDone::decode(
+                &packet.payload,
+            ) {
                 Some(msg) => {
                     crate::runtime::iosurface_registry::shadow::note_shadow_event(
                         msg.surface_id,
@@ -9583,7 +9697,8 @@ fn exec_child_packet_g<H: HostMemory + HostOps>(
             g.st().translation_deferred_mask &= !channel_bit;
             crate::observe::off(format!(
                 "exec_translation_ready ch={channel_id} task={} pending_mask={:#x}",
-                result.task_id, g.sh().translation_deferred_mask
+                result.task_id,
+                g.sh().translation_deferred_mask
             ));
         }
         // Failure-carrying packets keep the full per-packet line on the
@@ -9598,9 +9713,7 @@ fn exec_child_packet_g<H: HostMemory + HostOps>(
         if packet_failed {
             crate::observe::fail(exec_summary(channel_id, &result, packet.payload.len()));
         } else {
-            crate::observe::verbose(|| {
-                exec_summary(channel_id, &result, packet.payload.len())
-            });
+            crate::observe::verbose(|| exec_summary(channel_id, &result, packet.payload.len()));
         }
         if sync_exec_stalled(result.total_us) {
             crate::observe::fail(format!(
@@ -9655,9 +9768,7 @@ fn exec_child_packet_g<H: HostMemory + HostOps>(
             // dozen near-identical copies of a line whose value is that
             // there is one of it.
             if crate::observe::first_sight("sync_exec_lock_hold_pipes", 0) {
-                if let Some(firsts) =
-                    crate::runtime::gpu_hang_trail::recent_pipeline_firsts()
-                {
+                if let Some(firsts) = crate::runtime::gpu_hang_trail::recent_pipeline_firsts() {
                     crate::observe::fail(format!(
                         "TRANSPORT reason=sync_exec_lock_hold_pipes ch={channel_id} \
                          {firsts} (the pipelines this device drew for the first time \
@@ -9992,10 +10103,20 @@ fn drain_child_fifo_g<H: HostMemory + HostOps>(
         // Before the scope: a tail no doorbell's epoch covers gets one opened
         // after this read, and the scope below then makes the reads owe it.
         // In queue mode that is the guest tail the last ingest read.
-        host.note_ring_tail(channel_id, if ingest_queue.is_some() { q_guest_tail } else { tail });
+        host.note_ring_tail(
+            channel_id,
+            if ingest_queue.is_some() {
+                q_guest_tail
+            } else {
+                tail
+            },
+        );
         host.note_work_scope(crate::runtime::host::WorkScope::All);
         let ring = if ingest_queue.is_some() {
-            Ring::Queue { bytes: &q_bytes, base: q_base }
+            Ring::Queue {
+                bytes: &q_bytes,
+                base: q_base,
+            }
         } else {
             Ring::Child {
                 page_gpas: &page_gpas,
@@ -10097,18 +10218,46 @@ fn drain_child_fifo_g<H: HostMemory + HostOps>(
                     && lookahead_on()
                     && framed
                 {
-                    let pre = lookahead_admission_g(g, host, &ring, fifo, channel_id, stamp_index, &first, head, tail);
+                    let pre = lookahead_admission_g(
+                        g,
+                        host,
+                        &ring,
+                        fifo,
+                        channel_id,
+                        stamp_index,
+                        &first,
+                        head,
+                        tail,
+                    );
                     pre
-                } else if ahead_k <= 1
-                    && first.opcode == CHILD_OP_EXEC_INDIRECT2
-                    && lookahead_on()
+                } else if ahead_k <= 1 && first.opcode == CHILD_OP_EXEC_INDIRECT2 && lookahead_on()
                 {
-                    lookahead_admission(g.sh(), host, &ring, fifo, channel_id, stamp_index, &first, head, tail)
+                    lookahead_admission(
+                        g.sh(),
+                        host,
+                        &ring,
+                        fifo,
+                        channel_id,
+                        stamp_index,
+                        &first,
+                        head,
+                        tail,
+                    )
                 } else if ahead_k <= 1
                     && first.opcode == CHILD_OP_EXEC_INDIRECT2
                     && ingress_ahead_on()
                 {
-                    ingress_ahead_take(g.st(), host, &ring, fifo, channel_id, stamp_index, &first, head, tail)
+                    ingress_ahead_take(
+                        g.st(),
+                        host,
+                        &ring,
+                        fifo,
+                        channel_id,
+                        stamp_index,
+                        &first,
+                        head,
+                        tail,
+                    )
                 } else {
                     None
                 };
@@ -11555,6 +11704,24 @@ pub(crate) fn fold_rung_child_doorbells(state: &mut DeviceState) {
     state.pending.child_mask |= rung;
 }
 
+/// TEMP (lab, `REIMS_VGPU_DRAIN_SLICE_MS`): the drain tranche's slice in ms.
+/// Unset, unparsable or 0 means off (C34 behaviour). Read once per process.
+fn drain_slice_ms() -> u64 {
+    static SLICE_MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *SLICE_MS.get_or_init(|| {
+        std::env::var("REIMS_VGPU_DRAIN_SLICE_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(0)
+    })
+}
+
+/// Whether this tranche has drained for at least the slice. Always false off.
+fn drain_slice_expired() -> bool {
+    let ms = drain_slice_ms();
+    ms != 0 && census::tranche_elapsed_us() >= ms.saturating_mul(1000)
+}
+
 pub fn drain_pending<H: HostMemory + HostOps>(state: &mut DeviceState, host: &mut H) {
     // TEMP (lab, FRAME_GATE): the tranche's state behind the frame gate, the
     // pool's helpers serving its jobs while the drain holds it shared.
@@ -11592,7 +11759,10 @@ fn drain_pending_inner<H: HostMemory + HostOps>(state: &mut DeviceState, host: &
 }
 
 #[allow(unused_assignments)]
-fn drain_pending_inner_g<H: HostMemory + HostOps>(g: &mut crate::runtime::par::Gate<'_, '_>, host: &mut H) {
+fn drain_pending_inner_g<H: HostMemory + HostOps>(
+    g: &mut crate::runtime::par::Gate<'_, '_>,
+    host: &mut H,
+) {
     let mut state = g.st();
     // A queued present action is part of the ordered device timeline. QEMU
     // cannot paint it while this worker owns the device lock, so later worker
@@ -11659,7 +11829,7 @@ fn drain_pending_inner_g<H: HostMemory + HostOps>(g: &mut crate::runtime::par::G
     // nothing to re-arm it, and froze a boot for 29 s. Every bit that arrives
     // here arrives with its own `schedule_bh` already rung by the vCPU, so the
     // worker is guaranteed another wakeup for whatever this pass leaves.
-    for _ in 0..CHILD_DOORBELL_REFILLS {
+    'refill: for _ in 0..CHILD_DOORBELL_REFILLS {
         let mut remaining = mask;
         // TEMP (lab, REIMS_VGPU_LAB_COMPOSITOR_FIRST): the presenting channel's
         // work ahead of the other channels this pass serves.
@@ -11692,6 +11862,18 @@ fn drain_pending_inner_g<H: HostMemory + HostOps>(g: &mut crate::runtime::par::G
                     state.pending.child_mask |= remaining;
                     return;
                 }
+                // TEMP (lab, REIMS_VGPU_DRAIN_SLICE_MS, off by default): past the
+                // slice, the channels not yet served go back to the next wakeup at
+                // this packet-run boundary, so the tranche ends and its frame is
+                // published now. The settle below still runs; `schedule_bh` re-arms
+                // the worker for what is left. Off (unset or 0) this is never taken.
+                if remaining != 0 && drain_slice_expired() {
+                    state.pending.child_mask |= remaining;
+                    note_store_route("drain_slice_yield");
+                    host.schedule_bh();
+                    mask = 0;
+                    break 'refill;
+                }
             }
         }
         // A channel rung during this pass had its harvest asked for when it
@@ -11720,6 +11902,13 @@ fn drain_pending_inner_g<H: HostMemory + HostOps>(g: &mut crate::runtime::par::G
             note_store_route("child_doorbell_reserve");
         }
         if mask == 0 {
+            break;
+        }
+        // TEMP (lab, REIMS_VGPU_DRAIN_SLICE_MS): no refill past the slice; `mask`
+        // is handed back below and the worker re-armed for it.
+        if drain_slice_expired() {
+            note_store_route("drain_slice_refill_yield");
+            host.schedule_bh();
             break;
         }
         note_store_route("child_doorbell_refill");
@@ -11803,20 +11992,28 @@ mod arrival_declare_tests {
         assert!(state.set_object_list(1, 0, 32));
         let built = reims_vgpu_wire::device_desc::RefTextureBuilder::new(71, 0, 0, 0)
             .with_len(crate::runtime::objects::TYPE5_MIN_LEN);
-        assert!(
-            gva_mem::write_task_gva(&mut host, &state.tasks[1], 0x1000, built.bytes(), PAGE_SHIFT_X86)
-                .is_ok()
-        );
+        assert!(gva_mem::write_task_gva(
+            &mut host,
+            &state.tasks[1],
+            0x1000,
+            built.bytes(),
+            PAGE_SHIFT_X86
+        )
+        .is_ok());
         let list_off = list_object_entry_offset(2, 32).unwrap();
         let mut list_entry = [0u8; OBJECT_LIST_ENTRY_LEN];
         let packed = (crate::runtime::objects::OBJECT_TYPE_REF_TEXTURE as u32)
             | ((crate::runtime::objects::TYPE5_MIN_LEN as u32) << 8);
         st32(&mut list_entry, packed);
         list_entry[4..12].copy_from_slice(&0x1000u64.to_le_bytes());
-        assert!(
-            gva_mem::write_task_gva(&mut host, &state.tasks[1], list_off, &list_entry, PAGE_SHIFT_X86)
-                .is_ok()
-        );
+        assert!(gva_mem::write_task_gva(
+            &mut host,
+            &state.tasks[1],
+            list_off,
+            &list_entry,
+            PAGE_SHIFT_X86
+        )
+        .is_ok());
         (state, host)
     }
 
@@ -11834,7 +12031,10 @@ mod arrival_declare_tests {
         let first = state
             .object_name(1, 2)
             .and_then(|name| state.task_resources.get(1, name));
-        assert!(first.is_some(), "the ref is named and retained after arrival");
+        assert!(
+            first.is_some(),
+            "the ref is named and retained after arrival"
+        );
         // The second arrival of the same ref is a hit, not a second
         // construction — and the registry hands back the same resource.
         arrival_declare(&mut state, &mut host, 1, &[2]);
@@ -11876,9 +12076,7 @@ mod arrival_declare_tests {
     /// fills).
     fn exec_work_with_binds(refs: &[u32]) -> reims_vgpu_core::exec::ExecWork {
         use reims_vgpu_core::bind::ObjectBinding;
-        use reims_vgpu_core::exec::{
-            ExecWork, ResolvedOperation, ResolvedStream, StreamRecord,
-        };
+        use reims_vgpu_core::exec::{ExecWork, ResolvedOperation, ResolvedStream, StreamRecord};
         use reims_vgpu_core::identity::{ObjectListRef, ResourceId, SlotGeneration};
         use reims_vgpu_core::render::{RenderOp, ShaderStage};
         use reims_vgpu_core::stream::{SegmentBegin, SegmentKind};
@@ -11930,7 +12128,7 @@ mod arrival_declare_tests {
         let mut with_compute = exec_work_with_binds(&[2]);
         use reims_vgpu_core::bind::ObjectBinding;
         use reims_vgpu_core::compute::ComputeOp;
-        use reims_vgpu_core::exec::{ResolvedOperation, StreamRecord, ResolvedStream};
+        use reims_vgpu_core::exec::{ResolvedOperation, ResolvedStream, StreamRecord};
         use reims_vgpu_core::identity::{ObjectListRef, ResourceId, SlotGeneration};
         use reims_vgpu_core::stream::{SegmentBegin, SegmentKind, StreamPosition};
         use reims_vgpu_core::sync::ResourceSpan;
@@ -11990,7 +12188,11 @@ fn lab_preempt_control<H: HostMemory + HostOps>(state: &mut DeviceState, host: &
     // `all` adds the display ring: with ch2 no longer holding WindowServer
     // back, ch1's ring kept refilling while it was read and the presenting
     // channel waited up to 640 ms inside one tranche (n67 fpe1).
-    let channels: &[u32] = if lab_chan::preempt_display() { &[2, 4, 5] } else { &[2, 4] };
+    let channels: &[u32] = if lab_chan::preempt_display() {
+        &[2, 4, 5]
+    } else {
+        &[2, 4]
+    };
     for &ch in channels {
         let bit = 1u32 << ch;
         if open & bit == 0 || state.draining_mask.get() & bit != 0 {
@@ -12193,14 +12395,18 @@ mod lab_chan {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         // On by default since n73/n74 (ch2 2.8-3.1 ms against 5.8-8.0, srv halved,
         // no stripes, no device loss); `=off` reads rings to the live tail again.
-        *ON.get_or_init(|| std::env::var("REIMS_VGPU_LAB_RING_SNAPSHOT").map_or(true, |v| v != "off"))
+        *ON.get_or_init(|| {
+            std::env::var("REIMS_VGPU_LAB_RING_SNAPSHOT").map_or(true, |v| v != "off")
+        })
     }
 
     pub(super) fn preempt_on() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         // On by default since n73/n74 (WindowServer's idx-2 waits halved by DTrace);
         // `=off` restores serving ch2/ch4 in channel order only.
-        *ON.get_or_init(|| std::env::var("REIMS_VGPU_LAB_CTRL_PREEMPT").map_or(true, |v| v != "off"))
+        *ON.get_or_init(|| {
+            std::env::var("REIMS_VGPU_LAB_CTRL_PREEMPT").map_or(true, |v| v != "off")
+        })
     }
 
     pub(super) static INNER_LAST: AtomicU64 = AtomicU64::new(0);
@@ -12278,7 +12484,9 @@ mod lab_chan {
 
     pub(super) fn compositor_first() -> Option<u32> {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if !*ON.get_or_init(|| std::env::var("REIMS_VGPU_LAB_COMPOSITOR_FIRST").is_ok_and(|v| v == "on")) {
+        if !*ON.get_or_init(|| {
+            std::env::var("REIMS_VGPU_LAB_COMPOSITOR_FIRST").is_ok_and(|v| v == "on")
+        }) {
             return None;
         }
         match COMPOSITOR.load(Relaxed) {
@@ -12297,7 +12505,9 @@ mod lab_chan {
         }
         if matches!(
             opcode,
-            super::CHILD_OP_DISPLAY_SWAP | super::CHILD_OP_DISPLAY_TRANSACTION2 | super::CHILD_OP_DISPLAY_TRANSACTION3
+            super::CHILD_OP_DISPLAY_SWAP
+                | super::CHILD_OP_DISPLAY_TRANSACTION2
+                | super::CHILD_OP_DISPLAY_TRANSACTION3
         ) {
             PRESENTS[c].fetch_add(1, Relaxed);
             COMPOSITOR.store(channel, Relaxed);
@@ -12316,7 +12526,9 @@ mod lab_chan {
         let now = crate::observe::elapsed_ms() as u64;
         let last = LAST_MS.load(Relaxed);
         if now.saturating_sub(last) < 1000
-            || LAST_MS.compare_exchange(last, now, Relaxed, Relaxed).is_err()
+            || LAST_MS
+                .compare_exchange(last, now, Relaxed, Relaxed)
+                .is_err()
         {
             return;
         }
@@ -12356,10 +12568,14 @@ mod lab_chan {
     pub(super) static ACT: AtomicU32 = AtomicU32::new(0);
     static DB_ACT: [AtomicU32; N] = [const { AtomicU32::new(0) }; N];
 
-    fn slow() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<(u32, u32), (u64, u64)>> {
-        static M: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeMap<(u32, u32), (u64, u64)>>> =
-            std::sync::OnceLock::new();
-        M.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+    fn slow() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<(u32, u32), (u64, u64)>>
+    {
+        static M: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::BTreeMap<(u32, u32), (u64, u64)>>,
+        > = std::sync::OnceLock::new();
+        M.get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
     static DRAIN_DB: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
     static DRAIN_T0: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
@@ -12428,7 +12644,9 @@ mod lab_chan {
 
     fn lat() -> std::sync::MutexGuard<'static, Lat> {
         static L: std::sync::OnceLock<std::sync::Mutex<Lat>> = std::sync::OnceLock::new();
-        L.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+        L.get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     fn now_us() -> u64 {
@@ -12524,7 +12742,17 @@ mod lab_chan {
             q.pop_front();
         }
         let (waits, ahead) = UNMET.with(|u| u.replace((u32::MAX, 0)));
-        q.push_back(Entry { value, task: task.unwrap_or(u32::MAX), db, t0, admit, run: 0, exec: 0, waits, ahead });
+        q.push_back(Entry {
+            value,
+            task: task.unwrap_or(u32::MAX),
+            db,
+            t0,
+            admit,
+            run: 0,
+            exec: 0,
+            waits,
+            ahead,
+        });
     }
 
     /// What the model said at admission: when it did not release the packet
@@ -12539,7 +12767,11 @@ mod lab_chan {
             .and_then(|q| q.iter_mut().rev().find(|e| e.value == value))
         {
             if e.waits == u32::MAX && !ready {
-                e.waits = if hazards > 0 { (-2i32) as u32 } else { (-3i32) as u32 };
+                e.waits = if hazards > 0 {
+                    (-2i32) as u32
+                } else {
+                    (-3i32) as u32
+                };
             }
         }
     }
@@ -12567,9 +12799,16 @@ mod lab_chan {
     pub(super) fn lat_published(slot: u32, value: u32) {
         let now = now_us();
         let mut l = lat();
-        let Lat { pending, agg, waits } = &mut *l;
+        let Lat {
+            pending,
+            agg,
+            waits,
+        } = &mut *l;
         if let Some(q) = pending.get_mut(&slot) {
-            while q.front().is_some_and(|e| (value.wrapping_sub(e.value) as i32) >= 0) {
+            while q
+                .front()
+                .is_some_and(|e| (value.wrapping_sub(e.value) as i32) >= 0)
+            {
                 let e = q.pop_front().expect("front");
                 let run = if e.run == 0 { now } else { e.run };
                 let tot = now.saturating_sub(e.db);
@@ -12602,7 +12841,9 @@ mod lab_chan {
         let ms = now / 1000;
         let last = LAT_LAST_MS.load(Relaxed);
         if ms.saturating_sub(last) < 1000
-            || LAT_LAST_MS.compare_exchange(last, ms, Relaxed, Relaxed).is_err()
+            || LAT_LAST_MS
+                .compare_exchange(last, ms, Relaxed, Relaxed)
+                .is_err()
         {
             return;
         }

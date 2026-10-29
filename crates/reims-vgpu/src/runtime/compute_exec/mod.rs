@@ -49,6 +49,7 @@ use crate::runtime::mapper;
 use crate::runtime::mapping_write;
 use crate::runtime::mtlb::{load_mtlb, AirLoadRail};
 use crate::runtime::objects;
+use crate::runtime::surface_currency::{surface_currency, CurrencyStandard};
 use reims_vgpu_protocol::compute::DispatchType;
 use reims_vgpu_protocol::decode::compute::{ComputeRecord, DispatchRecord, Extent as RecordExtent};
 
@@ -1402,6 +1403,9 @@ pub(crate) trait RailStage: Sized {
 
     /// Set an existing TargetIdentity resident image to sample directly from VRAM.
     fn set_target_identity(&mut self, _identity: crate::backend::vulkan::engine::TargetIdentity) {}
+
+    /// Candidate 33: a rail that retains sampled inputs records the decision.
+    fn set_sampled_memo(&mut self, _memo: crate::backend::vulkan::engine::sampled_memo::SampledMemoUse) {}
 }
 
 /// The storage-mirror window a staged binding corresponds to.
@@ -2103,7 +2107,8 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
         if width == 0 || height == 0 {
             return Err(ComputeStatus::MissingTexture("compute_stage_tex_zero_geom"));
         }
-        // sRGB color-renderable surfaces stage as unorm storage (same bpp).
+        // Storage keeps the existing linear byte spelling; sampled bindings
+        // retain the view's sRGB transfer function.
         let view_format = match crate::runtime::draw::effective_view_sample_format_reasoned(
             format,
             view_pixel_format,
@@ -2127,10 +2132,17 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
                 return Err(ComputeStatus::Unsupported("compute_view_format"));
             }
         };
-        let stage_fmt = match view_format {
-            pixel_format::MTL_FORMAT_BGRA8_UNORM_SRGB => pixel_format::MTL_FORMAT_BGRA8_UNORM,
-            pixel_format::MTL_FORMAT_RGBA8_UNORM_SRGB => pixel_format::MTL_FORMAT_RGBA8_UNORM,
-            other => other,
+        let stage_fmt = match (
+            view_format,
+            is_storage && !R::accepts_storage_format(view_format),
+        ) {
+            (pixel_format::MTL_FORMAT_BGRA8_UNORM_SRGB, true) => {
+                pixel_format::MTL_FORMAT_BGRA8_UNORM
+            }
+            (pixel_format::MTL_FORMAT_RGBA8_UNORM_SRGB, true) => {
+                pixel_format::MTL_FORMAT_RGBA8_UNORM
+            }
+            (other, _) => other,
         };
         let bpp = match pixel_format::bytes_per_pixel(stage_fmt) {
             Some(v) => v,
@@ -2300,14 +2312,35 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
                 "compute_stage_resident_sample mapping={mapping_id} {width}x{height} fmt={stage_fmt:#x} gen={generation} bytes={need}"
             ));
         }
-        let persistent_gpu_on = crate::config::read(crate::config::LAB_IOSURFACE_PERSISTENT_GPU).0 == crate::config::Switch::On;
-        let is_gpu_auth = persistent_gpu_on && !is_storage && crate::runtime::iosurface_registry::shadow::with_shadow(|reg| {
-            reg.query_state(mapping_id, 0) == crate::runtime::iosurface_registry::PlaneState::GpuAuthoritative
-        }).unwrap_or(false);
+        let persistent_gpu_on = crate::config::read(crate::config::LAB_IOSURFACE_PERSISTENT_GPU).0
+            == crate::config::Switch::On;
+        let is_gpu_auth = persistent_gpu_on
+            && !is_storage
+            && crate::runtime::iosurface_registry::shadow::with_shadow(|reg| {
+                reg.query_state(mapping_id, 0)
+                    == crate::runtime::iosurface_registry::PlaneState::GpuAuthoritative
+            })
+            .unwrap_or(false);
 
-        let persistent_target = if is_gpu_auth {
-            let identity = crate::backend::vulkan::present_identity::surface_identity(state, mapping_id, width, height);
-            let ready = crate::backend::vulkan::engine::resident_content_backing(&identity) != crate::backend::vulkan::engine::ResidentContentBacking::NotReady;
+        // A compute read of a persistent IOSurface is still a read of the
+        // guest-visible surface.  A GpuAuthoritative shadow state describes
+        // the previous GPU Store; it cannot override a later SpringBoard CPU
+        // repaint.  This is a terminal resident read, so it needs positive
+        // watched-clean evidence, just like the sampled and LOAD persistent
+        // paths; `NoStamp` cannot certify guest-visible bytes.
+        let guest_replaced = is_gpu_auth
+            && !surface_currency(state, host, mapping_id, width, height)
+                .serves(CurrencyStandard::WatchedAndUnwritten);
+        if guest_replaced {
+            crate::runtime::drain::note_store_route("compute_persistent_refused_guest_wrote");
+        }
+
+        let persistent_target = if is_gpu_auth && !guest_replaced {
+            let identity = crate::backend::vulkan::present_identity::surface_identity(
+                state, mapping_id, width, height,
+            );
+            let ready = crate::backend::vulkan::engine::resident_content_backing(&identity)
+                != crate::backend::vulkan::engine::ResidentContentBacking::NotReady;
             if ready {
                 crate::runtime::iosurface_registry::census::note_persistent_gpu_hit();
                 Some(identity)
@@ -2316,11 +2349,130 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
                 None
             }
         } else {
+            if is_gpu_auth {
+                crate::runtime::iosurface_registry::census::note_persistent_gpu_fallback();
+            }
             None
         };
 
-        let mut bytes = vec![0u8; need];
-        if serve.is_none() && persistent_target.is_none() {
+        // Candidate 33 (`REIMS_VGPU_COMPUTE_RESIDENT_INPUTS=1`): a sampled input
+        // whose window this device uploaded at the current version, and whose
+        // pages the witness positively vouches for, binds the retained image
+        // instead of re-reading and re-uploading the same bytes. See
+        // `backend::vulkan::engine::sampled_memo`.
+        let memo_eligible = crate::backend::vulkan::engine::sampled_memo::enabled()
+            && !is_storage
+            && serve.is_none()
+            && persistent_target.is_none();
+        // Candidate 34: content mode decides after the read, below.
+        let content_mode =
+            memo_eligible && crate::backend::vulkan::engine::sampled_memo::content_enabled();
+        if memo_eligible {
+            // Candidate 34 diagnosis: which part of the C33 version token moves
+            // between sightings of the same window.
+            use crate::backend::vulkan::engine::sampled_memo as smemo;
+            if let Some(m) = state.mappings.get(&mapping_id) {
+                let parts = [
+                    m.content_generation as u64,
+                    m.surface_content_epoch as u64,
+                    m.map_generation as u64,
+                    m.guest_write_token,
+                    m.guest_write_token_gen as u64,
+                    m.guest_write_gen_at_store,
+                    m.guest_stated_gen as u64,
+                ];
+                if let Some((prev, log)) = smemo::observe_parts(residency_key, parts) {
+                    let mask = smemo::diff_parts(&prev, &parts);
+                    for (i, name) in [
+                        "c34_vdiff_content_generation",
+                        "c34_vdiff_surface_content_epoch",
+                        "c34_vdiff_map_generation",
+                        "c34_vdiff_guest_write_token",
+                        "c34_vdiff_guest_write_token_gen",
+                        "c34_vdiff_guest_write_gen_at_store",
+                        "c34_vdiff_guest_stated_gen",
+                    ]
+                    .iter()
+                    .enumerate()
+                    {
+                        if mask & (1 << i) != 0 {
+                            crate::runtime::drain::note_store_route(name);
+                        }
+                    }
+                    if mask == 0 {
+                        crate::runtime::drain::note_store_route("c34_vdiff_same");
+                    }
+                    if log {
+                        crate::observe::fail(format!(
+                            "c34_version_diff mapping={mapping_id} {width}x{height} fmt={stage_fmt:#x} off={surface_offset} bpr={surface_bpr} changed={}",
+                            smemo::describe_diff(&prev, &parts)
+                        ));
+                    }
+                }
+            }
+        }
+        let memo_plan = if memo_eligible && !content_mode {
+            use crate::backend::vulkan::engine::sampled_memo as smemo;
+            let version = state.mappings.get(&mapping_id).map_or(0, |m| {
+                smemo::version_token(&[
+                    m.content_generation as u64,
+                    m.surface_content_epoch as u64,
+                    m.map_generation as u64,
+                    m.guest_write_token,
+                    m.guest_write_token_gen as u64,
+                    m.guest_write_gen_at_store,
+                    m.guest_stated_gen as u64,
+                ])
+            });
+            let retained = smemo::lookup(&residency_key);
+            let previous_version = smemo::observe_version(residency_key, version);
+            let watched_clean = version != 0
+                && surface_currency(state, host, mapping_id, width, height)
+                    .serves(CurrencyStandard::WatchedAndUnwritten);
+            static HIT_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let would_hit = watched_clean && retained.map(|r| r.0) == Some(version);
+            let hit_tick = if would_hit {
+                HIT_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            } else {
+                1
+            };
+            let decision = smemo::decide(smemo::DecisionInput {
+                enabled: true,
+                is_storage,
+                mip_levels: 1,
+                other_source: false,
+                watched_clean,
+                retained_version: retained.map(|r| r.0),
+                previous_version,
+                version,
+                verify_every: smemo::verify_every(),
+                hit_tick,
+            });
+            Some((
+                decision,
+                smemo::SampledMemoTag {
+                    key: residency_key,
+                    version,
+                },
+                retained.map_or(0, |r| r.1),
+            ))
+        } else {
+            None
+        };
+        let memo_skip_read = matches!(
+            memo_plan,
+            Some((crate::backend::vulkan::engine::sampled_memo::Decision::Hit, ..))
+        );
+        let mut bytes = if memo_skip_read {
+            Vec::new()
+        } else {
+            vec![0u8; need]
+        };
+        if serve.is_none() && persistent_target.is_none() && !memo_skip_read {
+            if !is_storage {
+                crate::runtime::drain::note_store_route("c33_ri_bytes_uploads");
+                crate::runtime::drain::note_store_route_n("c33_ri_upload_bytes", need as u64);
+            }
             if !mapping_write::read_rect_raw_at(
                 state,
                 host,
@@ -2349,7 +2501,9 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
             }
             crate::runtime::drain::note_store_route("compute_stage_reseed_read");
             crate::runtime::drain::note_store_route_n("compute_stage_reseed_bytes", need as u64);
-            if crate::config::read(crate::config::LAB_IOSURFACE_CENSUS).0 == crate::config::Switch::On {
+            if crate::config::read(crate::config::LAB_IOSURFACE_CENSUS).0
+                == crate::config::Switch::On
+            {
                 use std::hash::Hasher as _;
                 let mut hasher = reims_vgpu_core::fasthash::FxHasher::default();
                 hasher.write(&bytes);
@@ -2397,6 +2551,114 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
             )
             });
         }
+        // Candidate 34 content mode: the bytes were read above; hash them and
+        // skip the upload when the committed copy holds exactly these bytes.
+        let content_use = if content_mode {
+            use crate::backend::vulkan::engine::sampled_memo::{
+                self as smemo, ContentDecision, SampledMemoUse,
+            };
+            let t0 = std::time::Instant::now();
+            let version = smemo::content_version(smemo::hash_bytes(&bytes));
+            crate::runtime::drain::note_store_route_n(
+                "c34_hash_us",
+                t0.elapsed().as_micros() as u64,
+            );
+            let retained = smemo::lookup(&residency_key).map(|r| r.0);
+            static CHIT_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let hit_tick = if retained == Some(version) {
+                CHIT_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            } else {
+                1
+            };
+            let tag = smemo::SampledMemoTag {
+                key: residency_key,
+                version,
+            };
+            let hit = |bytes: &mut Vec<u8>| {
+                crate::runtime::drain::note_store_route("c34_content_hits");
+                crate::runtime::drain::note_store_route_n("c34_bytes_skipped", need as u64);
+                *bytes = Vec::new();
+                Some(SampledMemoUse::Hit(tag))
+            };
+            let remember = |bytes: &Vec<u8>| {
+                smemo::shadow_store(residency_key, version, bytes);
+                Some(SampledMemoUse::Remember(tag))
+            };
+            match smemo::decide_content(smemo::ContentInput {
+                eligible: true,
+                retained_version: retained,
+                version,
+                verify_every: smemo::verify_every(),
+                hit_tick,
+            }) {
+                ContentDecision::Bytes => None,
+                ContentDecision::Miss => {
+                    crate::runtime::drain::note_store_route("c34_content_misses");
+                    remember(&bytes)
+                }
+                ContentDecision::Hit => hit(&mut bytes),
+                ContentDecision::VerifyHit => match smemo::shadow_compare(&residency_key, version, &bytes) {
+                    Some(true) => {
+                        crate::runtime::drain::note_store_route("c34_content_verified");
+                        hit(&mut bytes)
+                    }
+                    Some(false) => {
+                        crate::runtime::drain::note_store_route("c34_content_mismatch");
+                        crate::observe::fail(format!(
+                            "c34_content_mismatch mapping={mapping_id} {width}x{height} fmt={stage_fmt:#x} version={version:#x} bytes={need} (hash equal, bytes differ)"
+                        ));
+                        remember(&bytes)
+                    }
+                    None => {
+                        crate::runtime::drain::note_store_route("c34_content_verify_no_shadow");
+                        hit(&mut bytes)
+                    }
+                },
+            }
+        } else {
+            None
+        };
+        let memo_use = match memo_plan {
+            None => content_use,
+            Some((decision, tag, expected_hash)) => {
+                use crate::backend::vulkan::engine::sampled_memo::{Decision, SampledMemoUse};
+                match decision {
+                    Decision::Bytes => None,
+                    Decision::FirstSight => {
+                        crate::runtime::drain::note_store_route("c33_ri_first_sight");
+                        None
+                    }
+                    Decision::RefusedCurrency => {
+                        crate::runtime::drain::note_store_route("c33_ri_refused_currency");
+                        None
+                    }
+                    Decision::Remember => Some(SampledMemoUse::Remember(tag)),
+                    Decision::Hit => {
+                        crate::runtime::drain::note_store_route("c33_ri_hits");
+                        crate::runtime::drain::note_store_route_n("c33_ri_hit_bytes", need as u64);
+                        Some(SampledMemoUse::Hit(tag))
+                    }
+                    Decision::VerifyHit => {
+                        let got = crate::backend::vulkan::engine::sampled_memo::hash_bytes(&bytes);
+                        if got == expected_hash {
+                            crate::runtime::drain::note_store_route("c33_ri_verified");
+                            crate::runtime::drain::note_store_route("c33_ri_hits");
+                            crate::runtime::drain::note_store_route_n("c33_ri_hit_bytes", need as u64);
+                            bytes = Vec::new();
+                            Some(SampledMemoUse::Hit(tag))
+                        } else {
+                            crate::runtime::drain::note_store_route("c33_ri_mismatch");
+                            crate::observe::fail(format!(
+                                "c33_resident_mismatch mapping={mapping_id} {width}x{height} fmt={stage_fmt:#x} version={:#x} retained_hash={expected_hash:#x} guest_hash={got:#x} bytes={need}",
+                                tag.version
+                            ));
+                            // Replace the stale copy with what the guest holds.
+                            Some(SampledMemoUse::Remember(tag))
+                        }
+                    }
+                }
+            }
+        };
         let mut staged = StagedTexture {
             binding,
             pixel_format: stage_fmt,
@@ -2419,6 +2681,9 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
         };
         if let Some(identity) = persistent_target {
             staged.rail.set_target_identity(identity);
+        }
+        if let Some(memo) = memo_use {
+            staged.rail.set_sampled_memo(memo);
         }
         return Ok(staged);
     }
@@ -2520,12 +2785,14 @@ pub(crate) fn stage_texture_raw<R: RailStage, M: HostMemory + HostOps>(
     if view_slice > 0 {
         let storage_rows = pixel_format::tight_row_count(h, tex.pixel_format)
             .ok_or(ComputeStatus::Unsupported("linear_tex_fmt_rows"))?;
-        let slice_off = layout.row_stride
+        let slice_off = layout
+            .row_stride
             .checked_mul(u64::from(storage_rows))
             .and_then(|stride| stride.checked_mul(u64::from(layout.planes())))
             .and_then(|stride| stride.checked_mul(u64::from(view_slice)))
             .ok_or(ComputeStatus::Unsupported("linear_tex_slice_overflow"))?;
-        gva = gva.checked_add(slice_off)
+        gva = gva
+            .checked_add(slice_off)
             .ok_or(ComputeStatus::Unsupported("linear_tex_gva_overflow"))?;
     }
     let Some(tight) = (w as u64).checked_mul(bpp as u64).map(|v| v as usize) else {

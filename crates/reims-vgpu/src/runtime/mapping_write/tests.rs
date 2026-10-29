@@ -1220,7 +1220,16 @@ fn write_native_image_fragmented_lands_rows_and_skips_padding() {
         "two non-adjacent pages must take the fragmented arm this test is about"
     );
     let src = [0x11u8, 0x22, 0x33, 0x44, 0x55, 0x66];
-    assert!(write_native_image(&mut state, &mut host, mid, &src, 3, 3, 2, MTL_FORMAT_R8_UNORM));
+    assert!(write_native_image(
+        &mut state,
+        &mut host,
+        mid,
+        &src,
+        3,
+        3,
+        2,
+        MTL_FORMAT_R8_UNORM
+    ));
 
     // No device descriptor, so the invented window applies: tight = 3,
     // bpr = ALIGN_UP(3, ROW_BYTES_ALIGN) = 128.
@@ -1232,7 +1241,10 @@ fn write_native_image_fragmented_lands_rows_and_skips_padding() {
     want[..tight].copy_from_slice(&src[..tight]);
     want[bpr..bpr + tight].copy_from_slice(&src[tight..]);
     let first_diff = got.iter().zip(want.iter()).position(|(a, b)| a != b);
-    assert_eq!(first_diff, None, "byte {first_diff:?} outside the rows was modified");
+    assert_eq!(
+        first_diff, None,
+        "byte {first_diff:?} outside the rows was modified"
+    );
 }
 
 /// The packed-contig BGRA write pokes rows straight into a raw host pointer,

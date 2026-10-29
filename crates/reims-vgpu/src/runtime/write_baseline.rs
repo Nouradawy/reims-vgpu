@@ -166,9 +166,7 @@ pub fn install(ops: &ReimsVgpuHostOps) {
                         resolve(ticket);
                         note_wait("lab_baseline_read", t0.elapsed());
                         if gen_ == 0 {
-                            crate::runtime::drain::census::note_store_route(
-                                "lab_baseline_unarmed",
-                            );
+                            crate::runtime::drain::census::note_store_route("lab_baseline_unarmed");
                         }
                     }
                     Job::Publish {
@@ -224,12 +222,7 @@ fn resolve(ticket: u64) {
 /// thread, which stores `stamp` at `gpa` and calls `announce(index)` once
 /// every read issued before it has resolved. `false` when there is no thread —
 /// the caller joins and publishes itself.
-pub fn publish_after(
-    gpa: u64,
-    index: u32,
-    stamp: u32,
-    announce: fn(u32),
-) -> bool {
+pub fn publish_after(gpa: u64, index: u32, stamp: u32, announce: fn(u32)) -> bool {
     let Some(svc) = SERVICE.get() else {
         return false;
     };
@@ -364,7 +357,11 @@ mod tests {
         slot.store(7, Ordering::Release);
         assert_eq!(pending.get(), Some(7));
         assert_eq!(pending.wait(), 7);
-        assert_eq!(PendingGen::resolved(0).get(), Some(0), "0 is an answer: unarmed");
+        assert_eq!(
+            PendingGen::resolved(0).get(),
+            Some(0),
+            "0 is an answer: unarmed"
+        );
     }
 
     #[test]

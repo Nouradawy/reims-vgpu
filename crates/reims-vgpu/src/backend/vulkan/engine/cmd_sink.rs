@@ -317,6 +317,10 @@ const MAX_LANES: usize = 4;
 /// the submit order, which the queue owner keeps ([`Gate`]).
 static LANES: [Lane; MAX_LANES] = [const { Lane::new() }; MAX_LANES];
 static LOADERS: OnceLock<LoadersCell> = OnceLock::new();
+/// The dispatch table belonging to the current device incarnation. The lanes
+/// outlive a Vulkan device and must not keep replaying through its old table.
+static CURRENT: parking_lot::RwLock<Option<(std::sync::Arc<LoadersCell>, u64)>> =
+    parking_lot::RwLock::new(None);
 /// Lanes running (0 until the first [`activate`]).
 static RUNNING: AtomicUsize = AtomicUsize::new(0);
 
@@ -636,6 +640,7 @@ pub(crate) fn activate(ctx: &super::context::DeviceContext) -> ActiveGuard {
         RUNNING.store(n, Ordering::Release);
         cell
     });
+    rebind(ctx);
     if ACTIVE.with(Cell::get) {
         return ActiveGuard(false);
     }
@@ -655,6 +660,31 @@ pub(crate) fn scope() -> ActiveGuard {
 }
 
 pub(crate) struct ActiveGuard(bool);
+
+fn rebind(ctx: &super::context::DeviceContext) {
+    let want = ctx.generation;
+    let bound = CURRENT.read().as_ref().map(|current| current.1);
+    if bound == Some(want) {
+        return;
+    }
+    // Finish every list using the old dispatch before replacing its table.
+    sync();
+    *CURRENT.write() = Some((
+        std::sync::Arc::new(LoadersCell(Loaders {
+            device: ctx.device.clone(),
+            push: ctx.push_descriptor.clone(),
+            eds: ctx.extended_dynamic_state.clone(),
+            eds3: ctx.extended_dynamic_state3.clone(),
+        })),
+        want,
+    ));
+    if bound.is_some() {
+        let cleared = LANE_FAILURE.lock().take();
+        crate::observe::off(format!(
+            "vk_rec_lane_rebound device_generation={want} cleared_failure={cleared:?}"
+        ));
+    }
+}
 
 impl Drop for ActiveGuard {
     fn drop(&mut self) {
@@ -791,7 +821,6 @@ pub(crate) fn sync() {
 fn lane_main(index: usize) {
     super::recorder::apply_thread_priority(super::recorder::current_thread_priority());
     let lane = &LANES[index];
-    let loaders = &LOADERS.get().expect("loaders before the lane").0;
     let mut taken = 0u64;
     let mut spent: Option<List> = None;
     let mut busy = Duration::ZERO;
@@ -828,7 +857,8 @@ fn lane_main(index: usize) {
                         busy.as_micros() as u64,
                     );
                     crate::runtime::drain::note_store_route_n("rec_lane_lists", lists);
-                    lane.busy_ns.fetch_add(busy.as_nanos() as u64, Ordering::Relaxed);
+                    lane.busy_ns
+                        .fetch_add(busy.as_nanos() as u64, Ordering::Relaxed);
                     lane.lists.fetch_add(lists, Ordering::Relaxed);
                     busy = Duration::ZERO;
                     lists = 0;
@@ -840,14 +870,20 @@ fn lane_main(index: usize) {
         };
         taken += 1;
         let started = Instant::now();
+        let loaders = CURRENT
+            .read()
+            .as_ref()
+            .map(|current| std::sync::Arc::clone(&current.0))
+            .expect("loaders before the lane");
         // SAFETY: each command is the `ash` call the recorder would have made,
         // with the same handles, on the command buffer it named.
-        unsafe { replay(loaders, &mut list) };
+        unsafe { replay(&loaders.0, &mut list) };
         busy += started.elapsed();
         lists += 1;
         if busy >= Duration::from_millis(2) {
             // A lane that never parks (a long burst) still reports.
-            lane.busy_ns.fetch_add(busy.as_nanos() as u64, Ordering::Relaxed);
+            lane.busy_ns
+                .fetch_add(busy.as_nanos() as u64, Ordering::Relaxed);
             lane.lists.fetch_add(lists, Ordering::Relaxed);
             crate::runtime::drain::note_store_route_us("rec_lane_busy_us", busy.as_micros() as u64);
             crate::runtime::drain::note_store_route_n("rec_lane_lists", lists);
@@ -1033,7 +1069,8 @@ unsafe fn replay(lo: &Loaders, l: &mut List) {
                     }
                 }
                 Cmd::Begin(cb) => {
-                    if let Err(e) = d.reset_command_buffer(cb, vk::CommandBufferResetFlags::empty()) {
+                    if let Err(e) = d.reset_command_buffer(cb, vk::CommandBufferResetFlags::empty())
+                    {
                         note_lane_failure("reset", e);
                     } else if let Err(e) = d.begin_command_buffer(
                         cb,

@@ -73,8 +73,8 @@
 //! must keep meeting a declaration written before its neighbour arrived.
 
 use crate::access::{BackingId, ByteRange, HeapId, ResourceKey};
-use crate::identity::ResourceId;
 use crate::fasthash::FxHashMap;
+use crate::identity::ResourceId;
 use std::collections::HashMap;
 
 /// Why a heap operation did not happen.

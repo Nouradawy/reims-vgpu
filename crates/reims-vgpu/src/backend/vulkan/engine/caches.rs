@@ -1328,7 +1328,10 @@ pub(crate) struct ObjectCaches {
 }
 
 struct ObjectVariantIndex<K, V> {
-    map: reims_vgpu_core::fasthash::FxHashMap<std::num::NonZeroU64, (std::sync::Weak<super::types::PipelineObjectLife>, K, V)>,
+    map: reims_vgpu_core::fasthash::FxHashMap<
+        std::num::NonZeroU64,
+        (std::sync::Weak<super::types::PipelineObjectLife>, K, V),
+    >,
 }
 
 impl<K, V> Default for ObjectVariantIndex<K, V> {
@@ -2505,6 +2508,8 @@ impl ObjectCaches {
         counters: &EngineCounters,
         pools: &mut ResourcePools,
     ) -> Result<vk::Pipeline, DrawError> {
+        // TEMP (lab, REIMS_VGPU_LAB_DRAW_TIMERS)
+        let _dt = crate::runtime::draw_timers::span(crate::runtime::draw_timers::Bucket::Pipeline);
         if let Some(identity) = pipeline_object {
             if let Some(pipeline) = self.pipeline_objects.get(identity, key) {
                 counters.pipeline_hits.fetch_add(1, Ordering::Relaxed);
@@ -4524,13 +4529,7 @@ mod object_cache_tests {
         });
         assert!(!key.has_color0());
         assert!(!key.has_color());
-        let deps = external_dependencies(
-            key.has_color(),
-            key.depth.is_some(),
-            false,
-            false,
-            false,
-        );
+        let deps = external_dependencies(key.has_color(), key.depth.is_some(), false, false, false);
         assert_eq!(
             deps[0].dst_stage_mask & vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             vk::PipelineStageFlags::empty()
@@ -4576,8 +4575,8 @@ mod object_cache_tests {
 /// its warm shard again, silently turning every reordered boot cold.
 #[cfg(test)]
 mod pcache_shard_digest_tests {
-    use super::*;
     use super::super::pcache_shard;
+    use super::*;
 
     fn compute_key(layout: LayoutId, spirv: &str, local: Option<[u32; 3]>) -> ComputePipelineKey {
         ComputePipelineKey {
@@ -4598,7 +4597,10 @@ mod pcache_shard_digest_tests {
             boot_two.shard_digest(),
             "same content, different creation order, must share a shard"
         );
-        assert_eq!(pcache_shard::shard_of(boot_one.shard_digest()), pcache_shard::shard_of(boot_two.shard_digest()));
+        assert_eq!(
+            pcache_shard::shard_of(boot_one.shard_digest()),
+            pcache_shard::shard_of(boot_two.shard_digest())
+        );
     }
 
     #[test]
@@ -4614,6 +4616,9 @@ mod pcache_shard_digest_tests {
             compute_key(LayoutId(1), "kernel-a", Some([8, 1, 1])).shard_digest(),
             "different specialization"
         );
-        assert_eq!(base.shard_digest(), compute_key(LayoutId(1), "kernel-a", None).shard_digest());
+        assert_eq!(
+            base.shard_digest(),
+            compute_key(LayoutId(1), "kernel-a", None).shard_digest()
+        );
     }
 }

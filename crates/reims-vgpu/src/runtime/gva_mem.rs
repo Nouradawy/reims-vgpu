@@ -124,7 +124,11 @@ pub fn read_task_gva<M: HostMemory>(
         // A chunk never crosses its page, so each one is one page's translation.
         if tlb {
             let at = gva + chunk.offset as u64;
-            lab_tlb::put(task.directory_pfn, at >> page_shift, chunk.gpa - (at & page_mask));
+            lab_tlb::put(
+                task.directory_pfn,
+                at >> page_shift,
+                chunk.gpa - (at & page_mask),
+            );
         }
         match host.read_gpa(chunk.gpa, &mut buf[chunk.range()]) {
             Ok(()) => true,

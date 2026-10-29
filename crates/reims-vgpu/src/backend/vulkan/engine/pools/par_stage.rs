@@ -164,14 +164,24 @@ mod tests {
     /// Shares cut segments where a boundary falls and lose no byte.
     #[test]
     fn a_split_copy_lands_every_byte_where_the_serial_copy_does() {
-        let src: Vec<u8> = (0..(PAR_STAGE_MIN_BYTES + 12_345)).map(|i| (i * 7 + i / 4096) as u8).collect();
+        let src: Vec<u8> = (0..(PAR_STAGE_MIN_BYTES + 12_345))
+            .map(|i| (i * 7 + i / 4096) as u8)
+            .collect();
         let mut dst = vec![0u8; src.len() + 64];
         // Three uneven segments, reordered in the destination.
         let a = 1_000_003usize;
         let b = 5_000_011usize;
         let segs = [
-            Segment { src: src.as_ptr(), dst: unsafe { dst.as_mut_ptr().add(64) }, n: a },
-            Segment { src: unsafe { src.as_ptr().add(a) }, dst: unsafe { dst.as_mut_ptr().add(64 + a) }, n: b },
+            Segment {
+                src: src.as_ptr(),
+                dst: unsafe { dst.as_mut_ptr().add(64) },
+                n: a,
+            },
+            Segment {
+                src: unsafe { src.as_ptr().add(a) },
+                dst: unsafe { dst.as_mut_ptr().add(64 + a) },
+                n: b,
+            },
             Segment {
                 src: unsafe { src.as_ptr().add(a + b) },
                 dst: unsafe { dst.as_mut_ptr().add(64 + a + b) },

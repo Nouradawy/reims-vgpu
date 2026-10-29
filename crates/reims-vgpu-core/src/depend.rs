@@ -29,8 +29,8 @@
 //! of measuring it is to know what narrowing an access would buy.
 
 use crate::access::{requires_edge, AccessIntent, AccessKey, BackingId};
-use crate::identity::{ChannelId, IngressOrdinal};
 use crate::fasthash::FxHashMap;
+use crate::identity::{ChannelId, IngressOrdinal};
 use std::collections::HashMap;
 
 /// One live access, and the transaction that declared it.
@@ -236,7 +236,10 @@ impl DependencyGraph {
                 self.census.by_rung[usize::from(intent.key.rung()) - 1] += 1;
                 continue;
             }
-            seen.insert((intent.domain, intent.key), writes || filed.unwrap_or(false));
+            seen.insert(
+                (intent.domain, intent.key),
+                writes || filed.unwrap_or(false),
+            );
             scratch.clear();
             self.gather(intent, &mut scratch);
             for &candidate in &scratch {
@@ -902,7 +905,11 @@ mod tests {
         let reads = vec![intent(AccessKey::DomainOnly, AccessMode::Read); 46];
         assert_eq!(g.admit(ord(2), &reads), vec![ord(1)]);
         assert_eq!(g.live_accesses(), 2, "46 identical reads are one entry");
-        assert_eq!(g.census().accesses, 47, "all of them still count as admitted");
+        assert_eq!(
+            g.census().accesses,
+            47,
+            "all of them still count as admitted"
+        );
         // A read then a write of one key: the write is not covered by the read.
         let r = intent(AccessKey::Whole(res(7)), AccessMode::Read);
         let w7 = intent(AccessKey::Whole(res(7)), AccessMode::Write);

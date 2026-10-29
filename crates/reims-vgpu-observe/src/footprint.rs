@@ -362,7 +362,8 @@ fn lab_watch_hit(gpa: u64, len: u64) {
     let now = std::time::Instant::now();
     let (prev_hits, bursts) = {
         let mut b = BURST.lock().unwrap_or_else(|e| e.into_inner());
-        let quiet = b.0.is_none_or(|t| now.duration_since(t) > std::time::Duration::from_millis(20));
+        let quiet =
+            b.0.is_none_or(|t| now.duration_since(t) > std::time::Duration::from_millis(20));
         b.0 = Some(now);
         if !quiet {
             b.1 += 1;

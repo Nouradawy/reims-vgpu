@@ -87,7 +87,9 @@ impl ReimsMsgIosurfCreate {
 
         let mut planes = [ReimsIosurfPlaneDesc::default(); MAX_IOSURF_PLANES];
         let available_planes = (buf.len() - Self::HEADER_LEN) / ReimsIosurfPlaneDesc::LEN;
-        let read_count = (plane_count as usize).min(MAX_IOSURF_PLANES).min(available_planes);
+        let read_count = (plane_count as usize)
+            .min(MAX_IOSURF_PLANES)
+            .min(available_planes);
 
         for i in 0..read_count {
             let offset = Self::HEADER_LEN + i * ReimsIosurfPlaneDesc::LEN;

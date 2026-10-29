@@ -42,4 +42,4 @@ debug = "line-tables-only"
 # Windows/Tahoe edition: the translator with the macOS 26 fixes, kept beside this
 # checkout (MacOnIntel/metal2vulkan, branch windows-tahoe) until they land upstream.
 [patch."https://github.com/steelbrain/metal2vulkan.git"]
-metal2vulkan = { path = "../metal2vulkan" }
+metal2vulkan = { path = "../metal2vulkan-1017frozen" }

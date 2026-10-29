@@ -299,7 +299,8 @@ impl Hunt {
     /// Render the per-present line and reset every delta. The reset is the
     /// emit: what follows is the next window's account, whatever order the
     /// hooks ran in.
-    fn take_present_line(&mut self, mid: u32, w: u32, h: u32) -> String {        let fmt_ranges = |rows: &[(u32, u32)]| {
+    fn take_present_line(&mut self, mid: u32, w: u32, h: u32) -> String {
+        let fmt_ranges = |rows: &[(u32, u32)]| {
             if rows.is_empty() {
                 "none".to_string()
             } else {
@@ -592,7 +593,10 @@ mod tests {
         // The scissor reaches past the target and is clamped to its height.
         assert!(line.contains("rows=[466-476]"), "{line}");
         assert!(line.contains("mids=[91]"), "{line}");
-        assert!(line.contains("elide=1 elide_px=11010000 provided=1"), "{line}");
+        assert!(
+            line.contains("elide=1 elide_px=11010000 provided=1"),
+            "{line}"
+        );
         assert!(line.contains("skip=1 skip_kb=4 gather=1"), "{line}");
         assert!(line.contains("overlay=1 overlay_rows=[0-1,2-3]"), "{line}");
         assert!(line.contains("reopen=2 recreate=1"), "{line}");

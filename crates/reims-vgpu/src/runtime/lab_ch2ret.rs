@@ -189,7 +189,15 @@ pub fn note<M: HostMemory>(
                 }
                 e.unmapped = true;
             }
-            None => push_evict(track, RetEntry { gva, len: length, fp, unmapped: true }),
+            None => push_evict(
+                track,
+                RetEntry {
+                    gva,
+                    len: length,
+                    fp,
+                    unmapped: true,
+                },
+            ),
         }
     } else {
         MAP_TOTAL.fetch_add(1, Relaxed);
@@ -213,7 +221,15 @@ pub fn note<M: HostMemory>(
                 e.fp = fp;
                 e.unmapped = false;
             }
-            None => push_evict(track, RetEntry { gva, len: length, fp, unmapped: false }),
+            None => push_evict(
+                track,
+                RetEntry {
+                    gva,
+                    len: length,
+                    fp,
+                    unmapped: false,
+                },
+            ),
         }
     }
     maybe_print();

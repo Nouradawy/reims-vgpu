@@ -38,7 +38,10 @@ fn live() -> Option<&'static Live> {
             return None;
         }
         let path = std::env::var_os("REIMS_VGPU_LAB_LIVE_FILE")?;
-        crate::observe::off(format!("lab_live file={}", std::path::Path::new(&path).display()));
+        crate::observe::off(format!(
+            "lab_live file={}",
+            std::path::Path::new(&path).display()
+        ));
         Some(Live {
             path: path.into(),
             checked_us: AtomicU64::new(0),
@@ -66,7 +69,8 @@ fn live() -> Option<&'static Live> {
 }
 
 fn refresh(l: &Live) {
-    l.checked_us.store(crate::observe::elapsed_us().max(1), Relaxed);
+    l.checked_us
+        .store(crate::observe::elapsed_us().max(1), Relaxed);
     let mtime = std::fs::metadata(&l.path).and_then(|m| m.modified()).ok();
     let mut st = l.state.lock().unwrap_or_else(|e| e.into_inner());
     if mtime == st.0 {

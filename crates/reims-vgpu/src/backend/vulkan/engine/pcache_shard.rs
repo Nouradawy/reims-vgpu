@@ -121,7 +121,7 @@ pub(crate) fn enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| match std::env::var("REIMS_VGPU_LAB_PCACHE_SHARD") {
         Ok(v) => v != "off",
-        Err(_) => true,   // unset: on (the default since n200)
+        Err(_) => true, // unset: on (the default since n200)
     })
 }
 
@@ -221,11 +221,13 @@ fn put_u64(out: &mut Vec<u8>, v: u64) {
 }
 
 fn get_u32(blob: &[u8], at: usize) -> Option<u32> {
-    blob.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+    blob.get(at..at + 4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
 }
 
 fn get_u64(blob: &[u8], at: usize) -> Option<u64> {
-    blob.get(at..at + 8).map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+    blob.get(at..at + 8)
+        .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
 }
 
 pub(crate) fn encode_ledger(ledger: &Ledger) -> Vec<u8> {
@@ -262,7 +264,15 @@ pub(crate) fn parse_ledger(blob: &[u8]) -> Option<Ledger> {
         if id >= SHARD_COUNT {
             return None; // an id out of range means a format we do not know
         }
-        records.insert(id, ShardRecord { id, bytes, last_used, used });
+        records.insert(
+            id,
+            ShardRecord {
+                id,
+                bytes,
+                last_used,
+                used,
+            },
+        );
     }
     // Trailing bytes mean a format change we do not understand; refuse rather
     // than guess at records we may be misreading.
@@ -351,20 +361,42 @@ pub(crate) fn trim_over_cap(
 /// able to tell that from a first boot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ShardDecline {
-    Read { errno: Option<i32>, kind: std::io::ErrorKind },
-    Incompatible { shard: u32, bytes: usize },
-    TooLarge { shard: u32, bytes: usize, cap: usize },
-    WarmCreate { shard: u32, result: vk::Result },
-    Write { errno: Option<i32>, kind: std::io::ErrorKind },
+    Read {
+        errno: Option<i32>,
+        kind: std::io::ErrorKind,
+    },
+    Incompatible {
+        shard: u32,
+        bytes: usize,
+    },
+    TooLarge {
+        shard: u32,
+        bytes: usize,
+        cap: usize,
+    },
+    WarmCreate {
+        shard: u32,
+        result: vk::Result,
+    },
+    Write {
+        errno: Option<i32>,
+        kind: std::io::ErrorKind,
+    },
 }
 
 impl ShardDecline {
     fn read(error: &std::io::Error) -> Self {
-        Self::Read { errno: error.raw_os_error(), kind: error.kind() }
+        Self::Read {
+            errno: error.raw_os_error(),
+            kind: error.kind(),
+        }
     }
 
     fn write(error: &std::io::Error) -> Self {
-        Self::Write { errno: error.raw_os_error(), kind: error.kind() }
+        Self::Write {
+            errno: error.raw_os_error(),
+            kind: error.kind(),
+        }
     }
 }
 
@@ -382,7 +414,10 @@ impl crate::observe::Decline for ShardDecline {
     fn fields(&self) -> Vec<(&'static str, String)> {
         match self {
             Self::Read { errno, kind } | Self::Write { errno, kind } => vec![
-                ("errno", errno.map_or_else(|| "none".to_string(), |v| v.to_string())),
+                (
+                    "errno",
+                    errno.map_or_else(|| "none".to_string(), |v| v.to_string()),
+                ),
                 ("io_kind", format!("{kind:?}")),
             ],
             Self::Incompatible { shard, bytes } => {
@@ -395,7 +430,10 @@ impl crate::observe::Decline for ShardDecline {
             ],
             Self::WarmCreate { shard, result } => vec![
                 ("shard", shard.to_string()),
-                ("vk_result", result.to_string().replace(char::is_whitespace, "_")),
+                (
+                    "vk_result",
+                    result.to_string().replace(char::is_whitespace, "_"),
+                ),
             ],
         }
     }
@@ -428,7 +466,10 @@ pub(crate) fn warm_blob(
     if pipeline_cache_blob_compatible(&blob, props) {
         Ok(Some(blob))
     } else {
-        Err(ShardDecline::Incompatible { shard, bytes: blob.len() })
+        Err(ShardDecline::Incompatible {
+            shard,
+            bytes: blob.len(),
+        })
     }
 }
 
@@ -473,10 +514,12 @@ impl ShardSet {
             .and_then(|blob| parse_ledger(&blob))
             .unwrap_or_default();
         for (id, len) in scan_shard_files(dir) {
-            let record = ledger
-                .records
-                .entry(id)
-                .or_insert(ShardRecord { id, bytes: 0, last_used: 0, used: 0 });
+            let record = ledger.records.entry(id).or_insert(ShardRecord {
+                id,
+                bytes: 0,
+                last_used: 0,
+                used: 0,
+            });
             record.bytes = record.bytes.max(len);
         }
         ledger.boot_seq += 1;
@@ -689,7 +732,11 @@ impl ShardSet {
         // compile — a login storm would otherwise emit hundreds of
         // single-count lines inside one debounce window.
         for (id, compiles, warm) in &routed {
-            let route = if *warm { "pcache_shard_hit" } else { "pcache_shard_miss" };
+            let route = if *warm {
+                "pcache_shard_hit"
+            } else {
+                "pcache_shard_miss"
+            };
             crate::observe::off(format!("{route} shard={id:02x} compiles={compiles}"));
         }
         // LRU bookkeeping for every shard this boot actually used, warm or
@@ -698,11 +745,12 @@ impl ShardSet {
         // off. `used` counts boots the shard was warm AND compiled through.
         let boot_seq = self.boot_seq;
         for (id, _, warm) in &routed {
-            let record = self
-                .ledger
-                .records
-                .entry(*id)
-                .or_insert(ShardRecord { id: *id, bytes: 0, last_used: 0, used: 0 });
+            let record = self.ledger.records.entry(*id).or_insert(ShardRecord {
+                id: *id,
+                bytes: 0,
+                last_used: 0,
+                used: 0,
+            });
             record.last_used = boot_seq;
             if *warm {
                 if let Some(entry) = self.entries.get_mut(id) {
@@ -714,11 +762,12 @@ impl ShardSet {
             }
         }
         for (_, _, id, len) in &writes {
-            let record = self
-                .ledger
-                .records
-                .entry(*id)
-                .or_insert(ShardRecord { id: *id, bytes: 0, last_used: 0, used: 0 });
+            let record = self.ledger.records.entry(*id).or_insert(ShardRecord {
+                id: *id,
+                bytes: 0,
+                last_used: 0,
+                used: 0,
+            });
             record.bytes = *len;
         }
         // Wave-time trim: never a shard this boot loaded (live), always the
@@ -750,7 +799,10 @@ impl ShardSet {
         let ack = Arc::new(AtomicBool::new(false));
         let wave_shards: HashSet<u32> = writes.iter().map(|(_, _, id, _)| *id).collect();
         submit_shard_wave(
-            writes.into_iter().map(|(path, data, _, _)| (path, data)).collect(),
+            writes
+                .into_iter()
+                .map(|(path, data, _, _)| (path, data))
+                .collect(),
             Some((ledger_path(&self.dir), encode_ledger(&self.ledger))),
             deletes,
             ack.clone(),
@@ -895,17 +947,33 @@ mod pcache_shard_tests {
     /// ledger read back must equal the one written, field for field.
     #[test]
     fn ledger_roundtrip_preserves_every_field() {
-        let mut ledger = Ledger { boot_seq: 42, records: BTreeMap::new() };
+        let mut ledger = Ledger {
+            boot_seq: 42,
+            records: BTreeMap::new(),
+        };
         ledger.records.insert(
             3,
-            ShardRecord { id: 3, bytes: 1234, last_used: 40, used: 7 },
+            ShardRecord {
+                id: 3,
+                bytes: 1234,
+                last_used: 40,
+                used: 7,
+            },
         );
         ledger.records.insert(
             17,
-            ShardRecord { id: 17, bytes: 5678, last_used: 42, used: 0 },
+            ShardRecord {
+                id: 17,
+                bytes: 5678,
+                last_used: 42,
+                used: 0,
+            },
         );
         assert_eq!(parse_ledger(&encode_ledger(&ledger)), Some(ledger));
-        assert_eq!(parse_ledger(&encode_ledger(&Ledger::default())), Some(Ledger::default()));
+        assert_eq!(
+            parse_ledger(&encode_ledger(&Ledger::default())),
+            Some(Ledger::default())
+        );
     }
 
     /// A corrupt or foreign ledger is refused outright — truncations, bad
@@ -917,7 +985,12 @@ mod pcache_shard_tests {
             boot_seq: 1,
             records: [(
                 0u32,
-                ShardRecord { id: 0, bytes: 8, last_used: 1, used: 1 },
+                ShardRecord {
+                    id: 0,
+                    bytes: 8,
+                    last_used: 1,
+                    used: 1,
+                },
             )]
             .into_iter()
             .collect(),
@@ -987,7 +1060,10 @@ mod pcache_shard_tests {
         std::fs::write(shard_path(&dir, 4), b"not a pipeline cache").unwrap();
         assert_eq!(
             warm_blob(&dir, 4, &props()),
-            Err(ShardDecline::Incompatible { shard: 4, bytes: 20 }),
+            Err(ShardDecline::Incompatible {
+                shard: 4,
+                bytes: 20
+            }),
             "a damaged file is a named refusal"
         );
         // A header from another device is equally refused.
@@ -996,7 +1072,10 @@ mod pcache_shard_tests {
         other.pipeline_cache_uuid = [8u8; 16];
         assert_eq!(
             warm_blob(&dir, 5, &other),
-            Err(ShardDecline::Incompatible { shard: 5, bytes: 64 })
+            Err(ShardDecline::Incompatible {
+                shard: 5,
+                bytes: 64
+            })
         );
         // And a missing file is the quiet first-boot case, not a failure.
         assert_eq!(warm_blob(&dir, 6, &props()), Ok(None));
@@ -1026,15 +1105,33 @@ mod pcache_shard_tests {
     #[test]
     fn trim_removes_the_coldest_shards_until_under_cap() {
         let dir = test_dir("trim");
-        let mut ledger = Ledger { boot_seq: 9, records: BTreeMap::new() };
+        let mut ledger = Ledger {
+            boot_seq: 9,
+            records: BTreeMap::new(),
+        };
         for (id, bytes, last_used) in [(1u32, 100u64, 3u64), (2, 100, 8), (3, 100, 1), (4, 100, 5)]
         {
-            ledger.records.insert(id, ShardRecord { id, bytes, last_used, used: 0 });
+            ledger.records.insert(
+                id,
+                ShardRecord {
+                    id,
+                    bytes,
+                    last_used,
+                    used: 0,
+                },
+            );
             std::fs::write(shard_path(&dir, id), [0u8; 8]).unwrap();
         }
         let victims = trim_over_cap(&mut ledger, &dir, &HashSet::new(), 250);
-        assert_eq!(victims, vec![3, 1], "coldest last_used first, oldest to newest");
-        assert_eq!(ledger.records.keys().copied().collect::<Vec<_>>(), vec![2, 4]);
+        assert_eq!(
+            victims,
+            vec![3, 1],
+            "coldest last_used first, oldest to newest"
+        );
+        assert_eq!(
+            ledger.records.keys().copied().collect::<Vec<_>>(),
+            vec![2, 4]
+        );
         assert!(!shard_path(&dir, 3).exists());
         assert!(!shard_path(&dir, 1).exists());
         assert!(shard_path(&dir, 2).exists());
@@ -1048,11 +1145,20 @@ mod pcache_shard_tests {
     #[test]
     fn a_cap_too_small_never_empties_the_directory_or_eats_a_live_shard() {
         let dir = test_dir("capfloor");
-        let mut ledger = Ledger { boot_seq: 2, records: BTreeMap::new() };
+        let mut ledger = Ledger {
+            boot_seq: 2,
+            records: BTreeMap::new(),
+        };
         for (id, last_used) in [(0u32, 2u64), (1, 1)] {
-            ledger
-                .records
-                .insert(id, ShardRecord { id, bytes: 100, last_used, used: 0 });
+            ledger.records.insert(
+                id,
+                ShardRecord {
+                    id,
+                    bytes: 100,
+                    last_used,
+                    used: 0,
+                },
+            );
         }
         // Even a zero cap keeps the newest shard.
         let victims = trim_over_cap(&mut ledger, &dir, &HashSet::new(), 0);
@@ -1061,10 +1167,19 @@ mod pcache_shard_tests {
 
         // And with the survivor live, no trim fires at all.
         let live: HashSet<u32> = [0].into();
-        let mut ledger2 = Ledger { boot_seq: 3, records: BTreeMap::new() };
-        ledger2
-            .records
-            .insert(0, ShardRecord { id: 0, bytes: 100, last_used: 2, used: 1 });
+        let mut ledger2 = Ledger {
+            boot_seq: 3,
+            records: BTreeMap::new(),
+        };
+        ledger2.records.insert(
+            0,
+            ShardRecord {
+                id: 0,
+                bytes: 100,
+                last_used: 2,
+                used: 1,
+            },
+        );
         assert!(trim_over_cap(&mut ledger2, &dir, &live, 0).is_empty());
         assert_eq!(ledger2.records.len(), 1);
         std::fs::remove_dir_all(&dir).ok();
@@ -1080,7 +1195,10 @@ mod pcache_shard_tests {
         let set = ShardSet::open(&dir, &props());
         assert_eq!(set.boot_seq, 1, "first open is boot one");
         assert_eq!(set.ledger.records[&12].bytes, 48);
-        assert_eq!(set.ledger.records[&12].last_used, 0, "a stray file is cold-ordered");
+        assert_eq!(
+            set.ledger.records[&12].last_used, 0,
+            "a stray file is cold-ordered"
+        );
         drop(set);
         // Second boot reads the ledger the first wrote.
         let set = ShardSet::open(&dir, &props());
@@ -1091,7 +1209,10 @@ mod pcache_shard_tests {
         std::fs::write(ledger_path(&dir), b"garbage").unwrap();
         let set = ShardSet::open(&dir, &props());
         assert_eq!(set.boot_seq, 1, "a reset ledger restarts the count");
-        assert!(set.ledger.records.contains_key(&12), "the file still merges back in");
+        assert!(
+            set.ledger.records.contains_key(&12),
+            "the file still merges back in"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

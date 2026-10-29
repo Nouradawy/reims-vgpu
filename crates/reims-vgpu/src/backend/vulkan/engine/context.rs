@@ -134,18 +134,19 @@ fn pipeline_cache_max_warm_bytes() -> usize {
     *CAP.get_or_init(|| {
         const MIB: usize = 1024 * 1024;
         let ceiling = (PIPELINE_CACHE_MAX_WARM_BYTES / MIB) as u64;
-        let (cap, source) = match crate::config::count(crate::config::PIPELINE_CACHE_MAX_MB, ceiling) {
-            crate::config::Count::Narrowed(mb) => (mb as usize * MIB, "env"),
-            crate::config::Count::Unset => (PIPELINE_CACHE_MAX_WARM_BYTES, "default"),
-            crate::config::Count::Refused(raw) => {
-                crate::observe::fail(format!(
-                    "pipeline_cache_max_mb_refused value={raw} ceiling={ceiling} \
+        let (cap, source) =
+            match crate::config::count(crate::config::PIPELINE_CACHE_MAX_MB, ceiling) {
+                crate::config::Count::Narrowed(mb) => (mb as usize * MIB, "env"),
+                crate::config::Count::Unset => (PIPELINE_CACHE_MAX_WARM_BYTES, "default"),
+                crate::config::Count::Refused(raw) => {
+                    crate::observe::fail(format!(
+                        "pipeline_cache_max_mb_refused value={raw} ceiling={ceiling} \
                      (a whole MiB from 1 to the ceiling narrows the bound; anything \
                       else is ignored and the compiled bound kept)"
-                ));
-                (PIPELINE_CACHE_MAX_WARM_BYTES, "default_after_refusal")
-            }
-        };
+                    ));
+                    (PIPELINE_CACHE_MAX_WARM_BYTES, "default_after_refusal")
+                }
+            };
         crate::observe::off(format!(
             "pipeline_cache_cap bytes={cap} source={source} default={PIPELINE_CACHE_MAX_WARM_BYTES}"
         ));
@@ -557,7 +558,12 @@ mod persist {
                     crate::observe::Emit::decline("vk_pipeline_cache_save", &decline).fail_once(0);
                 }
             }
-            Job::WriteShardWave { writes, ledger, deletes, ran } => {
+            Job::WriteShardWave {
+                writes,
+                ledger,
+                deletes,
+                ran,
+            } => {
                 // Ack before the writes: a wave built while this one runs must
                 // not re-submit shards whose files are already landing.
                 ran.store(true, Ordering::Relaxed);
@@ -613,7 +619,12 @@ pub(super) fn submit_shard_wave(
     deletes: Vec<std::path::PathBuf>,
     ran: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
-    persist::submit(persist::Job::WriteShardWave { writes, ledger, deletes, ran });
+    persist::submit(persist::Job::WriteShardWave {
+        writes,
+        ledger,
+        deletes,
+        ran,
+    });
 }
 
 /// Validate a candidate initial-data blob against the live device.
@@ -839,7 +850,12 @@ fn lab_gpu_boost() -> bool {
     *ON.get_or_init(|| std::env::var("REIMS_VGPU_LAB_GPU_BOOST").map_or(true, |v| v != "off"))
 }
 
+/// A process-unique identity for every device context, independent of driver
+/// handle reuse after loss and recreation.
+static DEVICE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub(crate) struct DeviceContext {
+    pub generation: u64,
     pub _entry: ash::Entry,
     pub instance: ash::Instance,
     pub pd: vk::PhysicalDevice,
@@ -999,7 +1015,8 @@ pub(crate) struct DeviceContext {
     /// (`pipeline_cache_path` / `pipeline_cache_saved_len` /
     /// `pipeline_cache_last_saved`), which then runs exactly as before. See
     /// [`super::pipeline_cache_persist`].
-    pub(crate) pipeline_cache_persist: Option<std::sync::Arc<super::pipeline_cache_persist::Source>>,
+    pub(crate) pipeline_cache_persist:
+        Option<std::sync::Arc<super::pipeline_cache_persist::Source>>,
     /// TEMP (lab, `REIMS_VGPU_LAB_PCACHE_SHARD=on`): the per-pipeline shard
     /// caches this device compiles through instead of the monolithic one —
     /// `Some` exactly when the flag is on, so every shard-mode branch is
@@ -1405,9 +1422,8 @@ impl DeviceContext {
         // wait), which reads as ~20 % utilisation, so the GPU sat at 210 MHz of
         // its 3105 (nvidia-smi, 5K light scene) and every burst ran slow.
         #[cfg(feature = "host-window")]
-        let low_latency2 = swapchain
-            && lab_gpu_boost()
-            && has_device_extension(ash::nv::low_latency2::NAME);
+        let low_latency2 =
+            swapchain && lab_gpu_boost() && has_device_extension(ash::nv::low_latency2::NAME);
         #[cfg(not(feature = "host-window"))]
         let low_latency2 = false;
         if low_latency2 {
@@ -1771,6 +1787,7 @@ impl DeviceContext {
         };
         Ok(Self {
             _entry: entry,
+            generation: DEVICE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
             instance,
             pd,
             device,
@@ -1828,7 +1845,10 @@ impl DeviceContext {
     /// Creates Vulkan objects on first use per shard, so the caller must hold
     /// the same external synchronization every other device use on this
     /// context requires (the engine lock).
-    pub(crate) unsafe fn pipeline_cache_for(&self, digest: impl FnOnce() -> u64) -> vk::PipelineCache {
+    pub(crate) unsafe fn pipeline_cache_for(
+        &self,
+        digest: impl FnOnce() -> u64,
+    ) -> vk::PipelineCache {
         let Some(set) = self.pcache_shards.as_ref() else {
             return self.pipeline_cache;
         };
@@ -1869,7 +1889,8 @@ impl DeviceContext {
                     .store(true, Ordering::Relaxed);
                 return;
             }
-            self.pipeline_cache_saved_ms.store(now.max(1), Ordering::Relaxed);
+            self.pipeline_cache_saved_ms
+                .store(now.max(1), Ordering::Relaxed);
             self.pipeline_cache_save_pending
                 .store(false, Ordering::Relaxed);
         }
@@ -2136,6 +2157,8 @@ impl DeviceContext {
         fence: vk::Fence,
         gate: Option<super::cmd_sink::Gate>,
     ) -> Result<(), vk::Result> {
+        // TEMP (lab, REIMS_VGPU_LAB_DRAW_TIMERS)
+        let _dt = crate::runtime::draw_timers::span(crate::runtime::draw_timers::Bucket::Submit);
         let timeline = self
             .stamp_completion
             .as_ref()
@@ -2196,6 +2219,8 @@ impl DeviceContext {
         wait_all: bool,
         timeout: u64,
     ) -> Result<(), vk::Result> {
+        // TEMP (lab, REIMS_VGPU_LAB_DRAW_TIMERS)
+        let _dt = crate::runtime::draw_timers::span(crate::runtime::draw_timers::Bucket::Fence);
         if let Some(owner) = self.queue_owner.as_ref() {
             if fences.iter().any(|f| owner.fence_unsubmitted(*f)) {
                 owner.barrier();
@@ -2232,6 +2257,8 @@ impl DeviceContext {
         command_buffers: &[vk::CommandBuffer],
         fence: vk::Fence,
     ) -> Result<(), vk::Result> {
+        // TEMP (lab, REIMS_VGPU_LAB_DRAW_TIMERS)
+        let _dt = crate::runtime::draw_timers::span(crate::runtime::draw_timers::Bucket::Submit);
         match self.queue_owner.as_ref() {
             Some(owner) => owner.submit_async(command_buffers, fence, None),
             None => unsafe { self.submit_queue_work(command_buffers, &[], &[], &[], fence) },
@@ -2246,6 +2273,8 @@ impl DeviceContext {
         signal_semaphores: &[vk::Semaphore],
         fence: vk::Fence,
     ) -> Result<(), vk::Result> {
+        // TEMP (lab, REIMS_VGPU_LAB_DRAW_TIMERS)
+        let _dt = crate::runtime::draw_timers::span(crate::runtime::draw_timers::Bucket::Submit);
         if let Some(owner) = self.queue_owner.as_ref() {
             return owner.submit_sync_ordered(
                 command_buffers,
@@ -2669,7 +2698,10 @@ mod pipeline_cache_blob_tests {
     fn the_pipeline_cache_bound_is_50_mib_and_holds_the_v11_tahoe_boot() {
         assert_eq!(PIPELINE_CACHE_MAX_WARM_BYTES, 50 * 1024 * 1024);
         if std::env::var_os(crate::config::PIPELINE_CACHE_MAX_MB).is_none() {
-            assert_eq!(pipeline_cache_max_warm_bytes(), PIPELINE_CACHE_MAX_WARM_BYTES);
+            assert_eq!(
+                pipeline_cache_max_warm_bytes(),
+                PIPELINE_CACHE_MAX_WARM_BYTES
+            );
         }
         assert_eq!(
             super::super::pipeline_cache_persist::decide_save(
@@ -3258,7 +3290,10 @@ mod persist_owner_tests {
         let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let wave = || {
             persist::submit(persist::Job::WriteShardWave {
-                writes: vec![(s1.clone(), vec![0xABu8; 64]), (s2.clone(), vec![0xCDu8; 48])],
+                writes: vec![
+                    (s1.clone(), vec![0xABu8; 64]),
+                    (s2.clone(), vec![0xCDu8; 48]),
+                ],
                 ledger: Some((ledger.clone(), b"RVPSHL01".to_vec())),
                 deletes: vec![victim.clone()],
                 ran: ran.clone(),

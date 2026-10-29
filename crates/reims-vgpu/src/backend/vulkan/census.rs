@@ -252,7 +252,8 @@ fn emit_draw_phase() {
          descriptors_us={} \
          record_us={} rec_begin_us={} rec_barrier_us={} rec_pass_us={} rec_state_us={} \
          rec_draw_us={} submit_us={} post_target_us={} post_store_us={} post_sampled_us={} \
-         post_park_us={} wait_us={} readback_us={} max_us={} stalls={}",
+         post_park_us={} wait_us={} readback_us={} max_us={} stalls={} \
+         drain_draw_us={} unaccounted_us={}",
         w.draws,
         w.prep_us,
         w.slot_us,
@@ -289,6 +290,8 @@ fn emit_draw_phase() {
         w.readback_us,
         w.max_us,
         w.stalls,
+        w.drain_draw_us,
+        w.unaccounted_us(),
     ));
     emit_stage_phase();
     emit_gather_phase();

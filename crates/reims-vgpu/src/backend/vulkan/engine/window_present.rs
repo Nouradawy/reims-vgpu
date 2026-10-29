@@ -875,7 +875,8 @@ impl WindowPresenter {
             if !self.frames[ix].submitted {
                 continue;
             }
-            let signaled = ctx.fence_status(self.frames[ix].in_flight)
+            let signaled = ctx
+                .fence_status(self.frames[ix].in_flight)
                 .map_err(|error| DrawError::VkCall(VkCall::new(VkOp::WindowFenceStatus, error)))?;
             if !signaled {
                 continue;
@@ -1227,12 +1228,16 @@ impl WindowPresenter {
         let mut stale = source.is_some_and(|source| source.epoch != epoch_now);
         // TEMP (lab): a source this presenter itself re-vouched for at the
         // current epoch (see `lab_restamp`).
-        let restamped = source.filter(|_| stale && lab_restamp_enabled()).and_then(|source| {
-            self.lab_restamp
-                .as_ref()
-                .filter(|(identity, epoch, _)| *epoch == epoch_now && *identity == source.identity)
-                .map(|(_, _, resolved)| *resolved)
-        });
+        let restamped = source
+            .filter(|_| stale && lab_restamp_enabled())
+            .and_then(|source| {
+                self.lab_restamp
+                    .as_ref()
+                    .filter(|(identity, epoch, _)| {
+                        *epoch == epoch_now && *identity == source.identity
+                    })
+                    .map(|(_, _, resolved)| *resolved)
+            });
         if restamped.is_some() {
             stale = false;
         }
@@ -1381,7 +1386,9 @@ impl WindowPresenter {
                                 Ok(s) => self.sharp = Some(s),
                                 Err(e) => {
                                     self.sharp_failed = true;
-                                    crate::observe::fail(format!("present_sharp_refused build={e:?}"));
+                                    crate::observe::fail(format!(
+                                        "present_sharp_refused build={e:?}"
+                                    ));
                                 }
                             }
                         }
@@ -1447,7 +1454,9 @@ impl WindowPresenter {
                                 (vp.x, vp.y, vp.width, vp.height),
                                 SLATE_CLEAR,
                             )
-                            .map_err(|e| crate::observe::fail(format!("present_sharp_refused record={e:?}")))
+                            .map_err(|e| {
+                                crate::observe::fail(format!("present_sharp_refused record={e:?}"))
+                            })
                             .is_ok()
                     }
                     _ => false,
@@ -2246,7 +2255,9 @@ fn lab_probe_flush() {
         if probe.last != Some(value) {
             crate::observe::off(format!(
                 "lab_probe us={t} done_us={done} v={value:08x} was={}",
-                probe.last.map_or("none".to_string(), |v| format!("{v:08x}"))
+                probe
+                    .last
+                    .map_or("none".to_string(), |v| format!("{v:08x}"))
             ));
             probe.last = Some(value);
         }
@@ -2310,7 +2321,10 @@ fn lab_present_gap_note() {
     let now = Instant::now();
     let mut g = LAB_PRESENT_GAPS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(last) = g.0.replace(now) {
-        let us = now.duration_since(last).as_micros().min(u128::from(u32::MAX)) as u32;
+        let us = now
+            .duration_since(last)
+            .as_micros()
+            .min(u128::from(u32::MAX)) as u32;
         g.1.push(us);
     }
 }

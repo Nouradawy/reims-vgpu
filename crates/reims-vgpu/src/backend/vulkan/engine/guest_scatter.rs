@@ -451,21 +451,21 @@ impl ScatterPipeline {
         // one-compile-per-boot create warm-starts from its own shard too.
         let pipeline_cache =
             ctx.pipeline_cache_for(|| super::pcache_shard::words_digest(&GUEST_SCATTER_SPIRV));
-        let pipeline =
-            match unsafe { device.create_compute_pipelines(pipeline_cache, &info, None) } {
-                Ok(p) => p[0],
-                Err((_, e)) => {
-                    unsafe {
-                        device.destroy_pipeline_layout(layout, None);
-                        device.destroy_descriptor_set_layout(dsl, None);
-                        device.destroy_shader_module(module, None);
-                    }
-                    return Err(DrawError::VkCall(VkCall::new(
-                        VkOp::ScatterCreatePipeline,
-                        e,
-                    )));
+        let pipeline = match unsafe { device.create_compute_pipelines(pipeline_cache, &info, None) }
+        {
+            Ok(p) => p[0],
+            Err((_, e)) => {
+                unsafe {
+                    device.destroy_pipeline_layout(layout, None);
+                    device.destroy_descriptor_set_layout(dsl, None);
+                    device.destroy_shader_module(module, None);
                 }
-            };
+                return Err(DrawError::VkCall(VkCall::new(
+                    VkOp::ScatterCreatePipeline,
+                    e,
+                )));
+            }
+        };
         Ok(Self {
             module,
             dsl,
@@ -563,7 +563,14 @@ impl ScatterPipeline {
     ///
     /// `cb` must be recording.
     pub(crate) unsafe fn bind(&self, device: &ash::Device, cb: vk::CommandBuffer) {
-        unsafe { crate::backend::vulkan::engine::cmd_sink::bind_pipeline(&device, cb, vk::PipelineBindPoint::COMPUTE, self.pipeline) };
+        unsafe {
+            crate::backend::vulkan::engine::cmd_sink::bind_pipeline(
+                &device,
+                cb,
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline,
+            )
+        };
     }
 
     /// Bind the set, push the run count and dispatch one workgroup per run.
@@ -581,7 +588,8 @@ impl ScatterPipeline {
         run_count: u32,
     ) {
         unsafe {
-            crate::backend::vulkan::engine::cmd_sink::bind_descriptor_sets(&device, 
+            crate::backend::vulkan::engine::cmd_sink::bind_descriptor_sets(
+                &device,
                 cb,
                 vk::PipelineBindPoint::COMPUTE,
                 self.layout,
@@ -589,7 +597,8 @@ impl ScatterPipeline {
                 &[set],
                 &[],
             );
-            crate::backend::vulkan::engine::cmd_sink::push_constants(&device, 
+            crate::backend::vulkan::engine::cmd_sink::push_constants(
+                &device,
                 cb,
                 self.layout,
                 vk::ShaderStageFlags::COMPUTE,

@@ -125,8 +125,8 @@
 //! `buffer_gather_dispatches` would mean the timer is not on the path, never
 //! that the path is free.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use crate::lab_clock::LabInstant as Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The steps of planning and recording one draw's gather dispatches.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

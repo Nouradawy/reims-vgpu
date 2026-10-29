@@ -48,7 +48,12 @@ extern "system" {
     fn GetModuleHandleW(name: *const u16) -> Handle;
     fn GetModuleHandleExW(flags: u32, name: *const u16, module: *mut Handle) -> i32;
     fn GetModuleFileNameW(module: Handle, name: *mut u16, size: u32) -> u32;
-    fn K32GetModuleInformation(process: Handle, module: Handle, info: *mut ModuleInfo, size: u32) -> i32;
+    fn K32GetModuleInformation(
+        process: Handle,
+        module: Handle,
+        info: *mut ModuleInfo,
+        size: u32,
+    ) -> i32;
     fn GetCurrentProcess() -> Handle;
     fn GetCurrentThreadStackLimits(low: *mut usize, high: *mut usize);
     fn RtlLookupFunctionEntry(
@@ -95,8 +100,18 @@ fn module_of(pc: u64, known: &mut Vec<(u64, u64)>, w: &mut impl Write) -> bool {
         {
             return false;
         }
-        let mut info = ModuleInfo { base: core::ptr::null_mut(), size: 0, entry: core::ptr::null_mut() };
-        if K32GetModuleInformation(GetCurrentProcess(), h, &mut info, core::mem::size_of::<ModuleInfo>() as u32) == 0 {
+        let mut info = ModuleInfo {
+            base: core::ptr::null_mut(),
+            size: 0,
+            entry: core::ptr::null_mut(),
+        };
+        if K32GetModuleInformation(
+            GetCurrentProcess(),
+            h,
+            &mut info,
+            core::mem::size_of::<ModuleInfo>() as u32,
+        ) == 0
+        {
             return false;
         }
         let mut name = [0u16; 520];
@@ -203,10 +218,19 @@ fn run(target: Handle, out: &str, gate: Option<&str>, hz: u64, stack: (u64, u64)
     let mut frames = [0u64; MAX_FRAMES];
     let mut modules: Vec<(u64, u64)> = Vec::with_capacity(256);
     let exe_end = {
-        let mut info = ModuleInfo { base: core::ptr::null_mut(), size: 0, entry: core::ptr::null_mut() };
+        let mut info = ModuleInfo {
+            base: core::ptr::null_mut(),
+            size: 0,
+            entry: core::ptr::null_mut(),
+        };
         // SAFETY: a query about our own executable module.
         if unsafe {
-            K32GetModuleInformation(GetCurrentProcess(), base as Handle, &mut info, core::mem::size_of::<ModuleInfo>() as u32)
+            K32GetModuleInformation(
+                GetCurrentProcess(),
+                base as Handle,
+                &mut info,
+                core::mem::size_of::<ModuleInfo>() as u32,
+            )
         } != 0
         {
             base + info.size as u64
@@ -245,7 +269,8 @@ fn run(target: Handle, out: &str, gate: Option<&str>, hz: u64, stack: (u64, u64)
                 while n < MAX_FRAMES {
                     let rip = rd(&ctx, OFF_RIP);
                     let rsp = rd(&ctx, OFF_RSP);
-                    if rip == 0 || (n > 0 && rsp <= last_rsp) || rsp < stack.0 || rsp + 8 > stack.1 {
+                    if rip == 0 || (n > 0 && rsp <= last_rsp) || rsp < stack.0 || rsp + 8 > stack.1
+                    {
                         break;
                     }
                     last_rsp = rsp;

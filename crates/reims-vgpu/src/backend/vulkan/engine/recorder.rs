@@ -311,8 +311,8 @@ pub(crate) fn depth() -> u32 {
     // a smaller value than the jobs already out only makes the next submit wait
     // below it, as a full queue always did.
     #[cfg(not(test))]
-    if let Some(n) = crate::runtime::lab_live::value("RECORDER_DEPTH")
-        .and_then(|v| v.trim().parse::<u32>().ok())
+    if let Some(n) =
+        crate::runtime::lab_live::value("RECORDER_DEPTH").and_then(|v| v.trim().parse::<u32>().ok())
     {
         return n.clamp(1, 512);
     }
@@ -589,7 +589,10 @@ impl Handoff {
     #[track_caller]
     pub(crate) fn settle_until(&self, site: JoinSite, mut done: impl FnMut() -> bool) {
         let started = Instant::now();
-        let spin_until = started + JOIN_SPIN.max(Duration::from_micros(50)).min(Duration::from_micros(200));
+        let spin_until = started
+            + JOIN_SPIN
+                .max(Duration::from_micros(50))
+                .min(Duration::from_micros(200));
         let mut i = 0u32;
         while !done() {
             if !self.in_flight.load(Ordering::Acquire) {
@@ -634,7 +637,9 @@ impl Handoff {
         let spin = if below_spin().is_zero() {
             JOIN_SPIN
         } else {
-            JOIN_SPIN.max(Duration::from_micros(8 * u64::from(self.out_n.load(Ordering::Acquire))))
+            JOIN_SPIN.max(Duration::from_micros(
+                8 * u64::from(self.out_n.load(Ordering::Acquire)),
+            ))
         };
         let spin_until = started + spin.min(Duration::from_micros(200));
         let mut i = 0u32;
@@ -994,7 +999,11 @@ pub(crate) fn lab_retain_fast() -> bool {
 /// `resident_content_backing` - for sampled surfaces the queued draws did not
 /// touch, while the recorder itself sat idle ~60 % of those windows.
 #[track_caller]
-pub(crate) fn settle_unless_pending(is_drain: bool, site: JoinSite, identity: &super::types::TargetIdentity) -> bool {
+pub(crate) fn settle_unless_pending(
+    is_drain: bool,
+    site: JoinSite,
+    identity: &super::types::TargetIdentity,
+) -> bool {
     if is_drain && lab_retain_fast() && DRAW.in_flight() {
         let pending = PENDING_TARGETS.lock().iter().any(|(id, _)| id == identity);
         if !pending {

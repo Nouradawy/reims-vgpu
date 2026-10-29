@@ -59,6 +59,9 @@ enum PreparedSampledImage {
         width: u32,
         height: u32,
         mip_levels: u32,
+        /// Candidate 33: a retained image already in
+        /// SHADER_READ_ONLY_OPTIMAL; nothing is seeded.
+        retained: bool,
     },
     /// A retained multisample render target, bound through its own registry
     /// view. Nothing is acquired, uploaded or copied — see
@@ -120,6 +123,26 @@ enum ComputeImageDst {
     /// bound is the type, which is the whole argument in
     /// `runtime/guest_ram.rs`.
     Direct(super::GuestCopyPlan),
+}
+
+/// Undo registry transitions for a command buffer that was never submitted.
+/// Reverse order matters when two bindings name the same resident.
+fn restore_noted_access(
+    noted: &mut Vec<(TargetIdentity, super::pools::ResidentAccess)>,
+    mut restore: impl FnMut(&TargetIdentity, super::pools::ResidentAccess),
+) {
+    for (identity, previous) in noted.drain(..).rev() {
+        restore(&identity, previous);
+    }
+}
+
+fn rollback_noted_access(
+    pools: &mut ResourcePools,
+    noted: &mut Vec<(TargetIdentity, super::pools::ResidentAccess)>,
+) {
+    restore_noted_access(noted, |identity, previous| {
+        pools.registry_note_access(identity, previous);
+    });
 }
 
 pub(crate) fn validate_compute(req: &ComputeRequest) -> Result<(), DrawError> {
@@ -210,7 +233,9 @@ pub(crate) fn validate_compute(req: &ComputeRequest) -> Result<(), DrawError> {
         // The whole pyramid, not the base: `bytes` carries every level the
         // binding declares, and checking only the base would let a request
         // through whose upper levels the copy then reads past the end of.
-        if let ComputeSampledSource::Bytes(bytes) = &img.source {
+        if let ComputeSampledSource::Bytes(bytes) | ComputeSampledSource::BytesRetain(bytes, _) =
+            &img.source
+        {
             let expected = reims_vgpu_protocol::extent::tight_pyramid_bytes(
                 img.width,
                 img.height,
@@ -301,8 +326,10 @@ fn resident_sample_exact(
     bind: ComputeResidentSampleBind,
     src_key: StorageImageKey,
 ) -> Result<(), DrawError> {
-    let exact = src_key.format.vk_format() == resource.format.vk_format()
-        && src_key.width == resource.width
+    let exact = crate::backend::vulkan::translate::pixel::stored_bytes_agree(
+        src_key.format.vk_format(),
+        resource.format.vk_format(),
+    ) && src_key.width == resource.width
         && src_key.height == resource.height;
     if !exact {
         let source_row_bytes = src_key.width as u64 * src_key.format.bytes_per_texel() as u64;
@@ -549,6 +576,10 @@ pub(crate) unsafe fn execute_compute_inner(
     // copy from a resident storage image (copy-on-sample: the transient never
     // aliases the live resident, so the same dispatch may storage-write it).
     let mut sampled_slots = Vec::new();
+    // Candidate 33: keys this request bound from or filled into the retained
+    // store (never evicted by this request's commit), and the fills to commit.
+    let mut memo_touched: Vec<crate::model::ComputeStorageResidencyKey> = Vec::new();
+    let mut memo_filled: Vec<super::sampled_memo::SampledMemoTag> = Vec::new();
     for resource in &req.sampled_images {
         // Ahead of the pooled transient, because this source does not want one.
         // A multisample image cannot be filled by an upload or a copy, so
@@ -589,7 +620,9 @@ pub(crate) unsafe fn execute_compute_inner(
             // ones this bind names, or the resident is single-sample and would
             // be a descriptor-type mismatch against the shader's declared
             // multisampled image.
-            let persistent_gpu_on = crate::config::read(crate::config::LAB_IOSURFACE_PERSISTENT_GPU).0 == crate::config::Switch::On;
+            let persistent_gpu_on =
+                crate::config::read(crate::config::LAB_IOSURFACE_PERSISTENT_GPU).0
+                    == crate::config::Switch::On;
             if !content_ready
                 || (width != resource.width && (!persistent_gpu_on || width < resource.width))
                 || (height != resource.height && (!persistent_gpu_on || height < resource.height))
@@ -641,7 +674,63 @@ pub(crate) unsafe fn execute_compute_inner(
             sampled_only: true,
             mip_levels: resource.mip_levels.max(1),
         };
-        let img = pools.acquire_storage_image(ctx, key, counters)?;
+        if let ComputeSampledSource::Retained(tag) = &resource.source {
+            // Candidate 33: the runtime skipped the guest read on the strength
+            // of the published index; the image must still be held at exactly
+            // that version and shape, or the dispatch refuses visibly.
+            let held = if resource.mip_levels.max(1) == 1 {
+                pools.sampled_memo_get(tag, key)
+            } else {
+                None
+            };
+            let Some(img) = held else {
+                super::sampled_memo::note("c33_ri_absent", 1);
+                return Err(DrawError::ComputeExecution(
+                    ComputeExecutionDecline::ResidentSampleAbsent {
+                        binding: resource.binding,
+                        identity: tag.key,
+                        width: resource.width,
+                        height: resource.height,
+                    },
+                ));
+            };
+            memo_touched.push(tag.key);
+            sampled_slots.push(PreparedSampledImage::Staged {
+                binding: resource.binding,
+                array_element: resource.array_element,
+                img,
+                upload: None,
+                resident_src: None,
+                width: resource.width,
+                height: resource.height,
+                mip_levels: 1,
+                retained: true,
+            });
+            continue;
+        }
+        let retain = match &resource.source {
+            ComputeSampledSource::BytesRetain(bytes, tag)
+                if resource.mip_levels.max(1) == 1 && !memo_touched.contains(&tag.key) =>
+            {
+                Some((*tag, bytes))
+            }
+            _ => None,
+        };
+        let img = if let Some((tag, bytes)) = retain {
+            let hash = if super::sampled_memo::content_enabled() {
+                // Content mode: the version already is the byte hash.
+                tag.version
+            } else if super::sampled_memo::verify_every() != 0 {
+                super::sampled_memo::hash_bytes(bytes)
+            } else {
+                0
+            };
+            memo_touched.push(tag.key);
+            memo_filled.push(tag);
+            pools.sampled_memo_prepare(ctx, tag, key, hash, bytes.len() as u64, counters)?
+        } else {
+            pools.acquire_storage_image(ctx, key, counters)?
+        };
         // The byte weight of this binding, derived from its own geometry rather
         // than carried beside it. Both arms below want it, and the upload arm's
         // `bytes` is required to equal it by the request validation above.
@@ -654,9 +743,11 @@ pub(crate) unsafe fn execute_compute_inner(
         .unwrap_or(0) as u64;
         let resident_copy = match &resource.source {
             ComputeSampledSource::ResidentCopy(bind) => Some(*bind),
-            ComputeSampledSource::Bytes(_) => None,
+            ComputeSampledSource::Bytes(_) | ComputeSampledSource::BytesRetain(..) => None,
             // Returned above.
-            ComputeSampledSource::MultisampleTarget(_) => unreachable!(),
+            ComputeSampledSource::MultisampleTarget(_) | ComputeSampledSource::Retained(_) => {
+                unreachable!()
+            }
         };
         if resident_copy.is_some() && resource.mip_levels > 1 {
             // A resident is one window at one level. Seeding a pyramid's base
@@ -701,7 +792,9 @@ pub(crate) unsafe fn execute_compute_inner(
             counters.note_compute_sampled_resident_copy(staged_bytes);
             (None, Some((src_image, src_access)))
         } else {
-            let ComputeSampledSource::Bytes(bytes) = &resource.source else {
+            let (ComputeSampledSource::Bytes(bytes) | ComputeSampledSource::BytesRetain(bytes, _)) =
+                &resource.source
+            else {
                 unreachable!("the resident and multisample sources are handled above")
             };
             let st = pools.acquire_staging(ctx, bytes.len() as u64, counters)?;
@@ -718,6 +811,7 @@ pub(crate) unsafe fn execute_compute_inner(
             width: resource.width,
             height: resource.height,
             mip_levels: resource.mip_levels.max(1),
+            retained: false,
         });
     }
 
@@ -923,6 +1017,7 @@ pub(crate) unsafe fn execute_compute_inner(
             width,
             height,
             mip_levels,
+            retained,
             ..
         } = prepared
         else {
@@ -930,6 +1025,12 @@ pub(crate) unsafe fn execute_compute_inner(
             // placed for the read below, not seeded here.
             continue;
         };
+        if *retained {
+            // Candidate 33: filled and left SHADER_READ_ONLY_OPTIMAL by the
+            // earlier submission whose barrier already made it visible to
+            // compute; never written since.
+            continue;
+        }
         let (binding, width, height, mip_levels) = (*binding, *width, *height, *mip_levels);
         // Every level of the pyramid, not just the base: a level left in
         // `UNDEFINED` reads as a level nothing ever wrote.
@@ -941,7 +1042,8 @@ pub(crate) unsafe fn execute_compute_inner(
             .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
             .image(img.image)
             .subresource_range(range)];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::TOP_OF_PIPE,
             vk::PipelineStageFlags::TRANSFER,
@@ -982,7 +1084,8 @@ pub(crate) unsafe fn execute_compute_inner(
                         })
                 })
                 .collect();
-            crate::backend::vulkan::engine::cmd_sink::copy_buffer_to_image(&ctx.device, 
+            crate::backend::vulkan::engine::cmd_sink::copy_buffer_to_image(
+                &ctx.device,
                 cb,
                 st.buffer,
                 img.image,
@@ -1014,7 +1117,8 @@ pub(crate) unsafe fn execute_compute_inner(
                     height,
                     depth: 1,
                 })];
-            crate::backend::vulkan::engine::cmd_sink::copy_image(&ctx.device, 
+            crate::backend::vulkan::engine::cmd_sink::copy_image(
+                &ctx.device,
                 cb,
                 src_image,
                 next_access.layout(),
@@ -1039,7 +1143,8 @@ pub(crate) unsafe fn execute_compute_inner(
                     // naming it here would transition levels `src_image` has
                     // not got.
                     .subresource_range(super::color_subresource_range())];
-                crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+                crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+                    &ctx.device,
                     cb,
                     vk::PipelineStageFlags::TRANSFER,
                     vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER,
@@ -1057,7 +1162,8 @@ pub(crate) unsafe fn execute_compute_inner(
             .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .image(img.image)
             .subresource_range(range)];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::TRANSFER,
             vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -1082,7 +1188,8 @@ pub(crate) unsafe fn execute_compute_inner(
                 .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
                 .image(img.image)
                 .subresource_range(range)];
-            crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+            crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+                &ctx.device,
                 cb,
                 src_stage,
                 vk::PipelineStageFlags::TRANSFER,
@@ -1098,7 +1205,8 @@ pub(crate) unsafe fn execute_compute_inner(
                     height: prepared.height,
                     depth: 1,
                 })];
-            crate::backend::vulkan::engine::cmd_sink::copy_buffer_to_image(&ctx.device, 
+            crate::backend::vulkan::engine::cmd_sink::copy_buffer_to_image(
+                &ctx.device,
                 cb,
                 st.buffer,
                 img.image,
@@ -1128,7 +1236,8 @@ pub(crate) unsafe fn execute_compute_inner(
             .new_layout(vk::ImageLayout::GENERAL)
             .image(img.image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             old_stage,
             vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -1156,7 +1265,8 @@ pub(crate) unsafe fn execute_compute_inner(
                     .size(vk::WHOLE_SIZE)
             })
             .collect();
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::HOST,
             vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -1172,6 +1282,7 @@ pub(crate) unsafe fn execute_compute_inner(
     // the only transition they get, and it is owed for the same reason the
     // render rail's `PreparedSampled::Resident` arm owes one: the resident's
     // last touch was a colour write by another submission.
+    let mut noted_access = Vec::new();
     for prepared in &sampled_slots {
         let PreparedSampledImage::MultisampleTarget {
             identity,
@@ -1192,7 +1303,8 @@ pub(crate) unsafe fn execute_compute_inner(
                 .new_layout(next_access.layout())
                 .image(*image)
                 .subresource_range(super::color_subresource_range())];
-            crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+            crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+                &ctx.device,
                 cb,
                 src_stage,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -1204,23 +1316,27 @@ pub(crate) unsafe fn execute_compute_inner(
         }
         // After the barrier is recorded, so the registry never claims a layout
         // this command buffer has not been told to place the image in.
+        if let Some(previous) = pools.registry_get(identity).map(|slot| slot.access) {
+            noted_access.push((identity.clone(), previous));
+        }
         pools.registry_note_access(identity, *next_access);
     }
 
     if push_descriptors {
         crate::backend::vulkan::engine::cmd_sink::push_descriptor_set(
-                ctx.push_descriptor
-                    .as_ref()
-                    .expect("push layout requires enabled entry points"),
-                cb,
-                vk::PipelineBindPoint::COMPUTE,
-                pipeline_layout,
-                0,
-                &descriptor_writes,
-            );
+            ctx.push_descriptor
+                .as_ref()
+                .expect("push layout requires enabled entry points"),
+            cb,
+            vk::PipelineBindPoint::COMPUTE,
+            pipeline_layout,
+            0,
+            &descriptor_writes,
+        );
         counters.descriptor_pushes.fetch_add(1, Ordering::Relaxed);
     } else if let Some(dset) = dset {
-        crate::backend::vulkan::engine::cmd_sink::bind_descriptor_sets(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::bind_descriptor_sets(
+            &ctx.device,
             cb,
             vk::PipelineBindPoint::COMPUTE,
             pipeline_layout,
@@ -1239,11 +1355,17 @@ pub(crate) unsafe fn execute_compute_inner(
     // and consecutive Vulkan dispatches without a barrier carry that same
     // permission to overlap.
     for step in &dispatch_steps {
-        crate::backend::vulkan::engine::cmd_sink::bind_pipeline(&ctx.device, cb, vk::PipelineBindPoint::COMPUTE, step.pipeline);
+        crate::backend::vulkan::engine::cmd_sink::bind_pipeline(
+            &ctx.device,
+            cb,
+            vk::PipelineBindPoint::COMPUTE,
+            step.pipeline,
+        );
         if let Some((offset, payload)) = &step.push {
             let bytes =
                 std::slice::from_raw_parts(payload.as_ptr().cast::<u8>(), size_of_val(payload));
-            crate::backend::vulkan::engine::cmd_sink::push_constants(&ctx.device, 
+            crate::backend::vulkan::engine::cmd_sink::push_constants(
+                &ctx.device,
                 cb,
                 pipeline_layout,
                 vk::ShaderStageFlags::COMPUTE,
@@ -1251,7 +1373,8 @@ pub(crate) unsafe fn execute_compute_inner(
                 bytes,
             );
         }
-        crate::backend::vulkan::engine::cmd_sink::dispatch(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::dispatch(
+            &ctx.device,
             cb,
             step.group_count[0],
             step.group_count[1],
@@ -1273,7 +1396,8 @@ pub(crate) unsafe fn execute_compute_inner(
                     .size(vk::WHOLE_SIZE)
             })
             .collect();
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::COMPUTE_SHADER,
             vk::PipelineStageFlags::HOST,
@@ -1294,7 +1418,8 @@ pub(crate) unsafe fn execute_compute_inner(
             .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
             .image(img.image)
             .subresource_range(super::color_subresource_range())];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::COMPUTE_SHADER,
             vk::PipelineStageFlags::TRANSFER,
@@ -1317,7 +1442,8 @@ pub(crate) unsafe fn execute_compute_inner(
                         height: prepared.height,
                         depth: 1,
                     })];
-                crate::backend::vulkan::engine::cmd_sink::copy_image_to_buffer(&ctx.device, 
+                crate::backend::vulkan::engine::cmd_sink::copy_image_to_buffer(
+                    &ctx.device,
                     cb,
                     img.image,
                     vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
@@ -1354,7 +1480,8 @@ pub(crate) unsafe fn execute_compute_inner(
         let barrier = [vk::MemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
             .dst_access_mask(vk::AccessFlags::HOST_READ)];
-        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(&ctx.device, 
+        crate::backend::vulkan::engine::cmd_sink::pipeline_barrier(
+            &ctx.device,
             cb,
             vk::PipelineStageFlags::TRANSFER,
             vk::PipelineStageFlags::HOST,
@@ -1367,9 +1494,10 @@ pub(crate) unsafe fn execute_compute_inner(
 
     unsafe { pools.gpu_span_seal_current(ctx, cb) };
     crate::backend::vulkan::engine::cmd_sink::sync();
-    ctx.device
-        .end_command_buffer(cb)
-        .map_err(|e| DrawError::VkCall(VkCall::new(VkOp::ComputeExecEndCb, e)))?;
+    ctx.device.end_command_buffer(cb).map_err(|error| {
+        rollback_noted_access(pools, &mut noted_access);
+        DrawError::VkCall(VkCall::new(VkOp::ComputeExecEndCb, error))
+    })?;
 
     if force_loss {
         if let (Some(ds), Some(pool)) = (dset, dset_pool) {
@@ -1378,6 +1506,7 @@ pub(crate) unsafe fn execute_compute_inner(
         pools.recycle_staging();
         pools.recycle_readback();
         pools.recycle_storage_images();
+        rollback_noted_access(pools, &mut noted_access);
         return Err(DrawError::DeviceLost(DeviceLostDecline::ForcedCompute));
     }
 
@@ -1390,7 +1519,18 @@ pub(crate) unsafe fn execute_compute_inner(
                 result: e,
             }));
         }
-        Err(e) => return Err(DrawError::VkCall(VkCall::new(VkOp::ComputeExecSubmit, e))),
+        Err(error) => {
+            rollback_noted_access(pools, &mut noted_access);
+            return Err(DrawError::VkCall(VkCall::new(
+                VkOp::ComputeExecSubmit,
+                error,
+            )));
+        }
+    }
+
+    // Candidate 33: the fills are on the queue now; publish them.
+    if !memo_filled.is_empty() || pools.sampled_memo.bytes > super::sampled_memo::cap_bytes() {
+        pools.sampled_memo_commit(ctx, &memo_filled, &memo_touched);
     }
 
     // The copy into guest pages is on the queue now, so the debt is owed from
@@ -1539,6 +1679,34 @@ pub(super) unsafe fn copy_mapped_output(ptr: *const u8, len: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refused_submission_restores_the_original_access_for_aliased_bindings() {
+        use super::super::pools::ResidentAccess;
+        let identity = TargetIdentity::Surface {
+            id: 7,
+            width: 1,
+            height: 1,
+            generation: 1,
+            format: vk::Format::R8G8B8A8_UNORM,
+        };
+        let original = ResidentAccess::ColorWrite(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        let mut current = original;
+        let mut notes = Vec::new();
+        for next in [
+            ResidentAccess::TransferRead(vk::ImageLayout::TRANSFER_SRC_OPTIMAL),
+            ResidentAccess::ShaderRead(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+        ] {
+            notes.push((identity.clone(), current));
+            current = next;
+        }
+        restore_noted_access(&mut notes, |restored_identity, previous| {
+            assert_eq!(restored_identity, &identity);
+            current = previous;
+        });
+        assert_eq!(current, original);
+        assert!(notes.is_empty());
+    }
     use crate::backend::vulkan::engine::{
         ComputeResidentSampleBind, ComputeSampledImageResource, ComputeSampledSource,
         ComputeStorageImageResource, SamplerResource, StorageImageFormat,
@@ -1718,6 +1886,27 @@ mod tests {
             resident_sample_shape_slug(&byte_mismatch, resident_sample_key()),
             "vk_compute_exec_resident_sample_byte_shape_mismatch"
         );
+    }
+
+    #[test]
+    fn resident_sample_allows_srgb_views_of_the_same_stored_texels() {
+        let mut resource = resident_sample_resource();
+        resource.format = StorageImageFormat::Rgba8Srgb;
+        assert!(resident_sample_exact(
+            &resource,
+            resident_sample_bind(&resource),
+            resident_sample_key(),
+        )
+        .is_ok());
+        // Channel order is not a transfer function: equal byte counts do not
+        // license swapping RGBA and BGRA.
+        resource.format = StorageImageFormat::Bgra8Srgb;
+        assert!(resident_sample_exact(
+            &resource,
+            resident_sample_bind(&resource),
+            resident_sample_key(),
+        )
+        .is_err());
     }
 
     #[test]

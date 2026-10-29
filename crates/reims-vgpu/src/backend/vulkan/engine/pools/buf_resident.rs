@@ -58,7 +58,11 @@ fn byte_cap() -> u64 {
 
 impl ResourcePools {
     /// The slot kept for `id`, when it was filled under this very generation.
-    pub(crate) fn buf_resident_hit(&mut self, id: GatheredIdentity, len: u64) -> Option<BufferSlot> {
+    pub(crate) fn buf_resident_hit(
+        &mut self,
+        id: GatheredIdentity,
+        len: u64,
+    ) -> Option<BufferSlot> {
         let res = &mut self.buf_resident;
         res.tick += 1;
         let kept = res.kept.get_mut(&id.key)?;
@@ -153,7 +157,10 @@ mod tests {
         pools.entry.staging_live.push(a);
         pools.buf_resident_adopt(id(7, 1), a);
         assert!(pools.entry.staging_live.is_empty());
-        assert_eq!(pools.buf_resident_hit(id(7, 1), 4096).map(|s| s.buffer), Some(a.buffer));
+        assert_eq!(
+            pools.buf_resident_hit(id(7, 1), 4096).map(|s| s.buffer),
+            Some(a.buffer)
+        );
         assert!(pools.buf_resident_hit(id(7, 2), 4096).is_none());
         assert!(pools.buf_resident_hit(id(7, 1), 8192).is_none());
 
@@ -162,7 +169,10 @@ mod tests {
         pools.buf_resident_adopt(id(7, 2), b);
         assert_eq!(pools.entry.staging_live.len(), 1);
         assert_eq!(pools.entry.staging_live[0].buffer, a.buffer);
-        assert_eq!(pools.buf_resident_hit(id(7, 2), 4096).map(|s| s.buffer), Some(b.buffer));
+        assert_eq!(
+            pools.buf_resident_hit(id(7, 2), 4096).map(|s| s.buffer),
+            Some(b.buffer)
+        );
 
         let all = pools.buf_resident_take_all();
         assert_eq!(all.len(), 1);

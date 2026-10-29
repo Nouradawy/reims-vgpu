@@ -4244,7 +4244,7 @@ pub fn execute_blit<M: HostMemory + HostOps>(
         // The resolve memo holds a sampled source for the stream: this write
         // ends the destination's.
         #[cfg(feature = "backend-vulkan")]
-        crate::runtime::draw::vulkan::lab_resolve_memo_wrote(task_id, dest);
+        crate::runtime::draw::vulkan::lab_resolve_memo_wrote(state, task_id, dest);
     }
     // TEMP (lab, `REIMS_VGPU_LAB_BLIT_QUIESCE=1`): a blit writes guest RAM on the
     // CPU now, but GPU work recorded before it (and not yet executed) may read
@@ -4271,7 +4271,8 @@ pub fn execute_blit<M: HostMemory + HostOps>(
         {
             // `=all`: every blit waits for all GPU work recorded before it.
             crate::backend::vulkan::engine::lab_wait_idle();
-        } else if *Q.get_or_init(|| std::env::var("REIMS_VGPU_LAB_BLIT_QUIESCE").as_deref() == Ok("1"))
+        } else if *Q
+            .get_or_init(|| std::env::var("REIMS_VGPU_LAB_BLIT_QUIESCE").as_deref() == Ok("1"))
             && !matches!(record, BlitRecord::GenerateMipmaps(_))
         {
             if let Some(failure) = crate::backend::vulkan::engine::settle_deferred_draws() {

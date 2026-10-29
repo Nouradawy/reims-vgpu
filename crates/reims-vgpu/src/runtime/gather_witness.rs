@@ -508,7 +508,10 @@ impl GatherWitness {
 pub fn buf_resident_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        matches!(std::env::var("REIMS_VGPU_LAB_BUF_RESIDENT").as_deref(), Ok("on" | "1"))
+        matches!(
+            std::env::var("REIMS_VGPU_LAB_BUF_RESIDENT").as_deref(),
+            Ok("on" | "1")
+        )
     })
 }
 
@@ -518,10 +521,13 @@ fn buffer_route(route: &'static str) -> &'static str {
     use std::sync::Mutex;
     static NAMES: Mutex<Option<HashMap<&'static str, &'static str>>> = Mutex::new(None);
     let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
-    names.get_or_insert_with(HashMap::new).entry(route).or_insert_with(|| {
-        let tail = route.strip_prefix("gw_").unwrap_or(route);
-        Box::leak(format!("brw_{tail}").into_boxed_str())
-    })
+    names
+        .get_or_insert_with(HashMap::new)
+        .entry(route)
+        .or_insert_with(|| {
+            let tail = route.strip_prefix("gw_").unwrap_or(route);
+            Box::leak(format!("brw_{tail}").into_boxed_str())
+        })
 }
 
 impl GatherWitness {
@@ -775,7 +781,9 @@ pub(crate) unsafe fn fold_runs(runs: &[crate::runtime::guest_ram::GuestRun], spa
                     let blk = &run_bytes[off..end];
                     let (words, tail) = blk.split_at(blk.len() & !7);
                     for chunk in words.chunks_exact(8) {
-                        let w = u64::from_le_bytes(chunk.try_into().expect("chunks_exact(8) yields 8 bytes"));
+                        let w = u64::from_le_bytes(
+                            chunk.try_into().expect("chunks_exact(8) yields 8 bytes"),
+                        );
                         a = (a ^ w).rotate_left(29).wrapping_mul(0x9e37_79b9_7f4a_7c15);
                         b = b.rotate_left(7).wrapping_add(w ^ a);
                     }
@@ -1445,9 +1453,15 @@ pub(crate) fn commit_gather<M: crate::runtime::host::HostOps>(
         note_store_route(route);
     }
     note_observation(&plan.seen, plan.key, plan.span);
-    t2t_alias::note_decided(host, plan.seen.verdict, plan.seen.generation, gpas, plan.span); // TEMP (lab, T2T_ALIAS)
-    // TEMP (lab, STRIPE_HUNT): the planned-commit twin of `note_gather`'s hook,
-    // so a drain-planned bind is counted under the same per-present columns.
+    t2t_alias::note_decided(
+        host,
+        plan.seen.verdict,
+        plan.seen.generation,
+        gpas,
+        plan.span,
+    ); // TEMP (lab, T2T_ALIAS)
+       // TEMP (lab, STRIPE_HUNT): the planned-commit twin of `note_gather`'s hook,
+       // so a drain-planned bind is counted under the same per-present columns.
     crate::runtime::stripe_hunt::note_gather_bind(
         plan.seen.vouch == GatherVouch::Vouched,
         plan.span,
@@ -1613,7 +1627,8 @@ pub fn note_gather<M: crate::runtime::host::HostMemory + crate::runtime::host::H
         host,
         window.gpas,
         window.span,
-        rail == GatherRail::MapperRefTexture && matches!(key, GatherKey::Mapping { base_off: 0, .. }),
+        rail == GatherRail::MapperRefTexture
+            && matches!(key, GatherKey::Mapping { base_off: 0, .. }),
     );
 
     let span = window.span;
@@ -1666,7 +1681,13 @@ pub fn note_gather<M: crate::runtime::host::HostMemory + crate::runtime::host::H
     // the frame lands now - around the ranges the guest stored since the frame
     // parked (the defer stamped its guest-write generation) - and the bind is
     // judged again over the landed pages.
-    let park_guest_wrote = matches!(seen.verdict, GatherVerdict::Refused { guest_wrote: true, .. });
+    let park_guest_wrote = matches!(
+        seen.verdict,
+        GatherVerdict::Refused {
+            guest_wrote: true,
+            ..
+        }
+    );
     if park_exact && park_guest_wrote {
         crate::runtime::drain::note_store_route("t2t_park_guest_wrote");
         crate::observe::off(format!(
@@ -1707,9 +1728,9 @@ pub fn note_gather<M: crate::runtime::host::HostMemory + crate::runtime::host::H
     }
     t2t_alias::note_decided(&*host, seen.verdict, seen.generation, lab_gpas, span); // TEMP (lab, T2T_ALIAS)
     t2t_alias::release_untracked(host); // TEMP (lab, PAY_ALIAS)
-    // TEMP (lab, STRIPE_HUNT): the witness answered — a vouch serves the
-    // retained image without reading a byte (the false-quiet population), a
-    // refusal spends the generation and gathers.
+                                        // TEMP (lab, STRIPE_HUNT): the witness answered — a vouch serves the
+                                        // retained image without reading a byte (the false-quiet population), a
+                                        // refusal spends the generation and gathers.
     crate::runtime::stripe_hunt::note_gather_bind(seen.vouch == GatherVouch::Vouched, span);
 
     // Score the guest's stated account against the hypervisor's inferred one,
@@ -2076,7 +2097,10 @@ pub(crate) mod t2t_alias {
             }
         }
         if !gone.is_empty() {
-            UNTRACK.lock().unwrap_or_else(|e| e.into_inner()).extend(gone);
+            UNTRACK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .extend(gone);
         }
     }
 
@@ -2096,15 +2120,26 @@ pub(crate) mod t2t_alias {
             return;
         }
         let mut landed = LANDED.lock().unwrap_or_else(|e| e.into_inner());
-        push_landed(&mut landed, Landed { gpas, span, alias, token, gen });
+        push_landed(
+            &mut landed,
+            Landed {
+                gpas,
+                span,
+                alias,
+                token,
+                gen,
+            },
+        );
     }
 
     static LANDED: Mutex<Vec<Landed>> = Mutex::new(Vec::new());
     /// Census for the `lab_t2t_diag` line: generations confirmed, windows
     /// filled from the resident, and confirmed windows the engine declined.
-    pub(crate) static CONFIRMED_N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    pub(crate) static CONFIRMED_N: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
     pub(crate) static COPIED_N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    pub(crate) static DECLINED_N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    pub(crate) static DECLINED_N: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
     /// Large (1 MB+) windows' witness decisions: rearmed, unarmed, vouched,
     /// guest wrote, host only, both - and their kilobytes.
     pub(crate) static BIG_VERDICTS: [std::sync::atomic::AtomicU64; 6] =
@@ -2134,7 +2169,16 @@ pub(crate) mod t2t_alias {
             return;
         }
         let mut landed = LANDED.lock().unwrap_or_else(|e| e.into_inner());
-        push_landed(&mut landed, Landed { gpas, span, alias, token: 0, gen: 0 });
+        push_landed(
+            &mut landed,
+            Landed {
+                gpas,
+                span,
+                alias,
+                token: 0,
+                gen: 0,
+            },
+        );
     }
 
     /// A witness decision: confirm the generation it minted when the window is a
@@ -2151,8 +2195,14 @@ pub(crate) mod t2t_alias {
                 GatherVerdict::Rearmed => 0,
                 GatherVerdict::Unarmed => 1,
                 GatherVerdict::Vouched => 2,
-                GatherVerdict::Refused { guest_wrote: true, host_wrote_pages: false } => 3,
-                GatherVerdict::Refused { guest_wrote: false, host_wrote_pages: true } => 4,
+                GatherVerdict::Refused {
+                    guest_wrote: true,
+                    host_wrote_pages: false,
+                } => 3,
+                GatherVerdict::Refused {
+                    guest_wrote: false,
+                    host_wrote_pages: true,
+                } => 4,
                 GatherVerdict::Refused { .. } => 5,
             };
             BIG_VERDICTS[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2258,7 +2308,9 @@ pub(crate) mod lab_t2t_diag {
 
     fn flush(d: &mut Diag) {
         let now = Instant::now();
-        let due = d.last.is_none_or(|t| now.duration_since(t).as_millis() >= 1000);
+        let due = d
+            .last
+            .is_none_or(|t| now.duration_since(t).as_millis() >= 1000);
         if !due {
             return;
         }
@@ -2350,7 +2402,12 @@ pub(crate) mod lab_t2t_diag {
         }
     }
 
-    pub(crate) fn note_land(site: &'static std::panic::Location<'static>, age_us: u64, wait_us: u64, write_us: u64) {
+    pub(crate) fn note_land(
+        site: &'static std::panic::Location<'static>,
+        age_us: u64,
+        wait_us: u64,
+        write_us: u64,
+    ) {
         if cfg!(test) {
             return;
         }
@@ -4038,9 +4095,8 @@ mod tests {
         let mut plan = plan_gather(&planned, &host_p, rail, PLAN_KEY, one_page(&GPAS, &runs))
             .expect("a tracked window with the same pages plans");
         for _ in 0..4 {
-            let (a, repeat) =
-                commit_gather_repeatable(&mut planned, &host_p, &plan, &GPAS, &runs)
-                    .expect("nothing moved since the plan");
+            let (a, repeat) = commit_gather_repeatable(&mut planned, &host_p, &plan, &GPAS, &runs)
+                .expect("nothing moved since the plan");
             let b = note_gather(
                 &mut serial,
                 &mut host_s,
@@ -4159,7 +4215,8 @@ mod tests {
         assert_ne!(evidence.token, 0, "a vouch implies an armed token");
         assert_eq!(
             evidence.gen,
-            host.guest_write_gen(evidence.token).expect("the token is live"),
+            host.guest_write_gen(evidence.token)
+                .expect("the token is live"),
             "the evidence must name the generation the vouch compared, not some other reading"
         );
 

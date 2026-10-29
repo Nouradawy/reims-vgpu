@@ -306,6 +306,8 @@ pub(crate) struct ResourcePools {
     storage_image_free: FreePool<StorageImageKey, StorageImageSlot>,
     /// Protocol-identity keyed compute storage images retained across calls.
     compute_storage_registry: HashMap<ComputeStorageResidencyKey, ResidentStorageImageSlot>,
+    /// Candidate 33: retained compute sampled inputs.
+    pub(crate) sampled_memo: SampledMemoStore,
     /// Insertion order for [`Self::compute_storage_registry`], oldest *created*
     /// at the front. A `VecDeque` for the same reason as [`Self::registry_order`].
     ///
@@ -646,7 +648,10 @@ pub(crate) struct EntryState {
     /// pages** ([`ResourcePools::note_guest_write_recorded`]). That last one is
     /// the correctness edge: a bind after a Store into the same pages must see
     /// what the Store wrote, and reusing a copy taken before it would not.
-    cb_bound_buffers: reims_vgpu_core::fasthash::FxHashMap<(usize, u64, u64), (super::exec::BoundBuffer, CbBindOwner)>,
+    cb_bound_buffers: reims_vgpu_core::fasthash::FxHashMap<
+        (usize, u64, u64),
+        (super::exec::BoundBuffer, CbBindOwner),
+    >,
     /// Keys in `cb_bound_buffers` whose slot is **not yet filled**: a GPU gather
     /// was planned for them and the copy or dispatch that lands it has not been
     /// recorded into the command buffer.
@@ -1495,9 +1500,18 @@ impl ResourcePools {
 /// a hash of the bytes it held when recorded.
 pub(crate) enum LabVerify {
     /// A host-visible staging span the GPU reads.
-    Staging { ptr: usize, len: usize, hash: u64, t: u64 },
+    Staging {
+        ptr: usize,
+        len: usize,
+        hash: u64,
+        t: u64,
+    },
     /// Guest RAM the GPU reads at execute time (an import or a gather).
-    Guest { content: super::types::BufferContent, hash: u64, t: u64 },
+    Guest {
+        content: super::types::BufferContent,
+        hash: u64,
+        t: u64,
+    },
 }
 
 pub(crate) fn lab_verify_on() -> bool {
@@ -1510,7 +1524,9 @@ pub(crate) fn lab_verify_hash(bytes: &[u8]) -> u64 {
     for chunk in bytes.chunks(8) {
         let mut w = [0u8; 8];
         w[..chunk.len()].copy_from_slice(chunk);
-        h = (h ^ u64::from_le_bytes(w)).wrapping_mul(0x0000_0100_0000_01b3).rotate_left(29);
+        h = (h ^ u64::from_le_bytes(w))
+            .wrapping_mul(0x0000_0100_0000_01b3)
+            .rotate_left(29);
     }
     h ^ bytes.len() as u64
 }
@@ -1664,7 +1680,7 @@ impl SampledKey {
             kind: r.kind,
             format: r.format,
             swizzle: r.swizzle,
-            levels: 1,
+            levels: super::sampled_mips::level_count(&r.source),
         }
     }
 
@@ -3616,9 +3632,8 @@ impl CbBind {
 /// A/B.
 fn sampled_content_hash(bytes: &[u8]) -> u128 {
     static FAST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let fast = *FAST.get_or_init(|| {
-        std::env::var("REIMS_VGPU_LAB_SAMPLED_FASTHASH").as_deref() != Ok("off")
-    });
+    let fast = *FAST
+        .get_or_init(|| std::env::var("REIMS_VGPU_LAB_SAMPLED_FASTHASH").as_deref() != Ok("off"));
     if fast {
         return sampled_content_hash_lanes(bytes);
     }
@@ -3915,14 +3930,17 @@ impl Drop for SlowStagingWrite {
     }
 }
 
-pub mod buffer_gather_working_set;
 pub(crate) mod buf_resident;
+pub mod buffer_gather_working_set;
 mod images_and_registry;
 pub(crate) mod par_stage;
 /// What the resident registry says about an identity's content, readable
 /// without the engine lock.
 pub(crate) mod readiness;
 mod sampled_cache;
+/// Candidate 33 (REIMS_VGPU_COMPUTE_RESIDENT_INPUTS).
+mod sampled_memo_store;
+pub(crate) use sampled_memo_store::SampledMemoStore;
 pub mod sampled_working_set;
 mod submission_and_buffers;
 /// The lease's own extent travels with its pointer; see [`ReadbackLease`].
@@ -3988,6 +4006,17 @@ mod sampled_key_tests {
         assert_eq!((k.width, k.height, k.layers), (7, 5, 3));
         assert_eq!(k.format, ash::vk::Format::R8G8B8A8_UNORM);
         assert_eq!(k.swizzle, SwizzlePlan::default());
+    }
+
+    #[test]
+    fn byte_mip_chains_cannot_reuse_a_single_level_image_or_view() {
+        let mut r = resource(TextureKind::D2);
+        let single = SampledKey::of(&r);
+        r.source = SampledSource::MipmappedBytes(vec![std::sync::Arc::new(Vec::new()); 3]);
+        let chain = SampledKey::of(&r);
+        assert_eq!(chain.levels, 3);
+        assert_ne!(chain, single);
+        assert!(!chain.is_plain_2d_identity_view());
     }
 
     /// Only one key can describe the plain view of one attachment. Every other

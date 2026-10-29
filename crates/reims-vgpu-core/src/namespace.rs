@@ -69,8 +69,8 @@
 //! been set for is whichever object shared the low half of an address.
 
 use crate::access::BackingId;
-use crate::identity::{ObjectListRef, ResourceId, SlotGeneration};
 use crate::fasthash::FxHashMap;
+use crate::identity::{ObjectListRef, ResourceId, SlotGeneration};
 
 /// Why a namespace operation did not happen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

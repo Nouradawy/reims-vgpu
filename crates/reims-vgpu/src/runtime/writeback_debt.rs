@@ -73,8 +73,8 @@ pub fn lab_max_debts() -> usize {
     use std::sync::OnceLock;
     // Live (`MAX_DEBTS=N` in the lab live file): a bound, read where the ledger
     // is trimmed or armed, so a change moves only what is paid after it.
-    if let Some(n) = crate::runtime::lab_live::value("MAX_DEBTS")
-        .and_then(|v| v.trim().parse::<usize>().ok())
+    if let Some(n) =
+        crate::runtime::lab_live::value("MAX_DEBTS").and_then(|v| v.trim().parse::<usize>().ok())
     {
         return n.clamp(MAX_DEBTS, 1024);
     }
@@ -102,8 +102,8 @@ fn lab_debt_trim() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
         // Off under test: the ledger's own tests pin the synchronous bound.
-        let on = !cfg!(test)
-            && std::env::var("REIMS_VGPU_LAB_DEBT_TRIM").map_or(true, |v| v != "off");
+        let on =
+            !cfg!(test) && std::env::var("REIMS_VGPU_LAB_DEBT_TRIM").map_or(true, |v| v != "off");
         crate::observe::off(format!("lab_debt_trim on={on}"));
         on
     })
@@ -136,8 +136,8 @@ fn lab_trim_settle() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
-        let on = !cfg!(test)
-            && std::env::var("REIMS_VGPU_LAB_TRIM_SETTLE").is_ok_and(|v| v == "on");
+        let on =
+            !cfg!(test) && std::env::var("REIMS_VGPU_LAB_TRIM_SETTLE").is_ok_and(|v| v == "on");
         crate::observe::off(format!("lab_trim_settle on={on}"));
         on
     })
@@ -189,7 +189,11 @@ pub fn lab_trim_debts<M: HostMemory + HostOps>(
         return;
     }
     YIELDS.store(0, Relaxed);
-    let budget = if moving || (idle_policy && busy) { 1 } else { 16 };
+    let budget = if moving || (idle_policy && busy) {
+        1
+    } else {
+        16
+    };
     for _ in 0..budget {
         if state.pending_writebacks.debts.len() <= cap {
             break;
@@ -264,8 +268,7 @@ fn lab_trim_defer() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
-        let on = !cfg!(test)
-            && std::env::var("REIMS_VGPU_LAB_TRIM_DEFER").is_ok_and(|v| v == "on");
+        let on = !cfg!(test) && std::env::var("REIMS_VGPU_LAB_TRIM_DEFER").is_ok_and(|v| v == "on");
         crate::observe::off(format!("lab_trim_defer on={on}"));
         on
     })
@@ -671,7 +674,11 @@ impl PendingWritebacks {
     /// pay — a planner on a pool thread — must not read those pages.
     pub fn owes(&self, mapping_id: u32) -> bool {
         self.debts.contains_key(&mapping_id)
-            || self.deferred.0.as_ref().is_some_and(|d| d.mapping_id == mapping_id)
+            || self
+                .deferred
+                .0
+                .as_ref()
+                .is_some_and(|d| d.mapping_id == mapping_id)
     }
 
     /// TEMP (lab PAY_DEFER): the mapping a begun payment still owes its landing.
@@ -743,7 +750,9 @@ impl PendingWritebacks {
         height: u32,
         map_generation: u32,
     ) -> Option<WritebackKey> {
-        let evict = match self.debts.len() >= lab_debt_hard_cap() && !self.debts.contains_key(&mapping_id) {
+        let evict = match self.debts.len() >= lab_debt_hard_cap()
+            && !self.debts.contains_key(&mapping_id)
+        {
             true => self.oldest(),
             false => None,
         };
@@ -1036,9 +1045,9 @@ impl PendingWritebacks {
         }
         let end = gva.saturating_add(span);
         self.gva_debts.iter().any(|(plane, debt)| {
-            let debt_end = debt.gva.saturating_add(
-                u64::from(debt.row_stride).saturating_mul(u64::from(debt.height)),
-            );
+            let debt_end = debt
+                .gva
+                .saturating_add(u64::from(debt.row_stride).saturating_mul(u64::from(debt.height)));
             plane.resource.task_id == task_id && debt.gva < end && gva < debt_end
         })
     }
@@ -1330,9 +1339,9 @@ static LAB_PAY_SETTLE_LAST_US: std::sync::atomic::AtomicU64 = std::sync::atomic:
 fn lab_pay_settling() -> bool {
     let us = lab_pay_settle_us();
     us > 0
-        && crate::observe::elapsed_us().saturating_sub(
-            LAB_PAY_SETTLE_LAST_US.load(std::sync::atomic::Ordering::Relaxed),
-        ) < us
+        && crate::observe::elapsed_us()
+            .saturating_sub(LAB_PAY_SETTLE_LAST_US.load(std::sync::atomic::Ordering::Relaxed))
+            < us
 }
 
 /// TEMP (lab): the presented mapping whose frame [`lab_pay_after_stamp`] pays
@@ -1347,9 +1356,7 @@ const LAB_PAY_AFTER_MAX_YIELDS: u32 = 8;
 fn lab_pay_after_yield() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var("REIMS_VGPU_LAB_PAY_AFTER_YIELD").map_or(true, |v| v != "off")
-    })
+    *ON.get_or_init(|| std::env::var("REIMS_VGPU_LAB_PAY_AFTER_YIELD").map_or(true, |v| v != "off"))
 }
 
 /// TEMP (lab, `REIMS_VGPU_LAB_PAY_IDLE=on`): [`lab_pay_after_stamp`] pays only at
@@ -1560,7 +1567,7 @@ pub fn pay_for_mapping<M: HostMemory + HostOps>(
     mapping_id: u32,
 ) {
     crate::runtime::render_writeback::land_t2t(state, host, Some(mapping_id)); // TEMP (lab T2T_DEFER)
-    // TEMP (lab, T2T_PARK): a parked frame owed to these pages through another mapping.
+                                                                               // TEMP (lab, T2T_PARK): a parked frame owed to these pages through another mapping.
     crate::runtime::render_writeback::land_t2t_over_mapping(state, host, mapping_id);
     pay_for_mapping_debt(state, host, mapping_id);
 }
@@ -1579,14 +1586,22 @@ pub fn pay_for_mapping_gathered<M: HostMemory + HostOps>(
 }
 
 #[track_caller]
-fn pay_for_mapping_debt<M: HostMemory + HostOps>(state: &mut DeviceState, host: &mut M, mapping_id: u32) {
+fn pay_for_mapping_debt<M: HostMemory + HostOps>(
+    state: &mut DeviceState,
+    host: &mut M,
+    mapping_id: u32,
+) {
     if state.pending_writebacks.is_empty() {
         return;
     }
     // TEMP (lab, b039): which readers make a named payment - the call site, in
     // `lab_gpu_host_sites` beside the target reads it causes.
     if state.pending_writebacks.get(mapping_id).is_some() {
-        crate::backend::vulkan::engine::lab_site_note("pay_named", std::panic::Location::caller(), 0);
+        crate::backend::vulkan::engine::lab_site_note(
+            "pay_named",
+            std::panic::Location::caller(),
+            0,
+        );
     }
     if state.pending_writebacks.deferred_mapping() == Some(mapping_id) {
         crate::runtime::drain::note_store_route("lab_pay_defer_named");
@@ -1972,13 +1987,10 @@ pub fn owes_texture(state: &DeviceState, task_id: u32, texture_ref: u32) -> bool
     if state.pending_writebacks.is_empty() {
         return false;
     }
-    if state
-        .pending_writebacks
-        .owes_gva_resource(GvaResourceKey {
-            task_id,
-            texture_ref,
-        })
-    {
+    if state.pending_writebacks.owes_gva_resource(GvaResourceKey {
+        task_id,
+        texture_ref,
+    }) {
         return true;
     }
     state
@@ -2886,9 +2898,10 @@ pub fn supersede_gva_overlapping_for_gpu_clear(
     span: u64,
 ) {
     if !state.pending_writebacks.is_empty() && span != 0 {
-        let owed = state
-            .pending_writebacks
-            .take_gva_overlapping(own.resource.task_id, own.gva, span);
+        let owed =
+            state
+                .pending_writebacks
+                .take_gva_overlapping(own.resource.task_id, own.gva, span);
         if !owed.is_empty() {
             let rail = crate::backend::selected();
             for (plane, debt) in owed {
@@ -3072,7 +3085,10 @@ pub fn land_deferred<M: HostMemory + HostOps>(state: &mut DeviceState, host: &mu
         return;
     };
     let rail = crate::backend::selected();
-    let live = state.mappings.get(&d.mapping_id).map(|m| (m.map_generation, m.validity));
+    let live = state
+        .mappings
+        .get(&d.mapping_id)
+        .map(|m| (m.map_generation, m.validity));
     match live {
         Some((generation, validity))
             if generation == d.map_generation
@@ -3120,14 +3136,11 @@ pub fn land_deferred_if_ready<M: HostMemory + HostOps>(state: &mut DeviceState, 
         return;
     };
     let rail = crate::backend::selected();
-    let live = state
-        .mappings
-        .get(&d.mapping_id)
-        .is_some_and(|m| {
-            m.map_generation == d.map_generation
-                && crate::runtime::resource_validity::licence_of(m.validity)
-                    != crate::runtime::resource_validity::WritebackLicence::Superseded
-        });
+    let live = state.mappings.get(&d.mapping_id).is_some_and(|m| {
+        m.map_generation == d.map_generation
+            && crate::runtime::resource_validity::licence_of(m.validity)
+                != crate::runtime::resource_validity::WritebackLicence::Superseded
+    });
     if !live {
         crate::runtime::drain::note_store_route("lab_pay_defer_dropped");
         drop(d.pending); // a copy in flight is waited for, not abandoned mid-way
@@ -3266,7 +3279,10 @@ pub(crate) fn note_read_requested(task_id: u32, object_id: u32) {
 
 fn take_read_requested(task_id: u32, object_id: u32) -> bool {
     let mut list = READ_REQUESTED.lock().unwrap_or_else(|e| e.into_inner());
-    match list.iter().position(|&(t, o)| t == task_id && o == object_id) {
+    match list
+        .iter()
+        .position(|&(t, o)| t == task_id && o == object_id)
+    {
         Some(i) => {
             list.swap_remove(i);
             true
@@ -4480,11 +4496,15 @@ mod tests {
             .pending_writebacks
             .owes_gva_overlapping(3, 0x5000, 0x1000));
         assert!(
-            !state.pending_writebacks.owes_gva_overlapping(4, 0x5000, 0x1000),
+            !state
+                .pending_writebacks
+                .owes_gva_overlapping(4, 0x5000, 0x1000),
             "GVAs are per task, so another task's same address owes nothing"
         );
         assert!(
-            !state.pending_writebacks.owes_gva_overlapping(3, 0x9000, 0x1000),
+            !state
+                .pending_writebacks
+                .owes_gva_overlapping(3, 0x9000, 0x1000),
             "a window clear of every debt window owes nothing"
         );
         assert!(!state.pending_writebacks.owes_gva_overlapping(3, 0x5000, 0));

@@ -149,11 +149,16 @@ pub(crate) fn unbounded_enabled() -> bool {
 /// limit from `REIMS_VGPU_PIPELINE_CACHE_MAX_MB`, else unbounded. Pure over
 /// the parsed count so the rule is testable. Returns (cap, source slug,
 /// refused raw value if any).
-pub(crate) fn unbounded_cap_from(count: crate::config::Count) -> (usize, &'static str, Option<String>) {
+pub(crate) fn unbounded_cap_from(
+    count: crate::config::Count,
+) -> (usize, &'static str, Option<String>) {
     const MIB: usize = 1024 * 1024;
     match count {
         crate::config::Count::Narrowed(mb) => (
-            usize::try_from(mb).ok().and_then(|mb| mb.checked_mul(MIB)).unwrap_or(usize::MAX),
+            usize::try_from(mb)
+                .ok()
+                .and_then(|mb| mb.checked_mul(MIB))
+                .unwrap_or(usize::MAX),
             "env_lower_limit",
             None,
         ),
@@ -246,7 +251,12 @@ fn free_bytes_at(dir: &Path) -> Option<u64> {
     // SAFETY: `wide` is NUL-terminated and outlives the call; the two optional
     // out-pointers may be null per the API contract.
     let ok = unsafe {
-        GetDiskFreeSpaceExW(wide.as_ptr(), &mut avail, std::ptr::null_mut(), std::ptr::null_mut())
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut avail,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
     };
     (ok != 0).then_some(avail)
 }
@@ -295,7 +305,11 @@ pub(crate) fn cache_dir_from(
 /// The process's cache directory, from the live environment.
 pub(crate) fn cache_dir() -> (PathBuf, DirSource) {
     let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
-    let local = if cfg!(windows) { var("LOCALAPPDATA") } else { None };
+    let local = if cfg!(windows) {
+        var("LOCALAPPDATA")
+    } else {
+        None
+    };
     cache_dir_from(
         local.as_deref(),
         var("XDG_CACHE_HOME").as_deref(),
@@ -413,7 +427,8 @@ pub(crate) fn load_blob(
         Err(e) => LoadOutcome::Rejected {
             reason: format!(
                 "read errno={} io_kind={:?}",
-                e.raw_os_error().map_or_else(|| "none".into(), |v| v.to_string()),
+                e.raw_os_error()
+                    .map_or_else(|| "none".into(), |v| v.to_string()),
                 e.kind()
             ),
             bytes: 0,
@@ -499,7 +514,12 @@ impl SaveDecision {
     }
 }
 
-pub(crate) fn decide_save(initial_len: usize, landed_len: usize, len: usize, cap: usize) -> SaveDecision {
+pub(crate) fn decide_save(
+    initial_len: usize,
+    landed_len: usize,
+    len: usize,
+    cap: usize,
+) -> SaveDecision {
     if len > cap {
         // Growth this boot beyond what it loaded. A warm blob that covered the
         // workload grows little; one that grows by more than its own size was
@@ -550,7 +570,8 @@ pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<(), (&'static str
 fn io_fields(e: &std::io::Error) -> String {
     format!(
         "errno={} io_kind={:?}",
-        e.raw_os_error().map_or_else(|| "none".into(), |v| v.to_string()),
+        e.raw_os_error()
+            .map_or_else(|| "none".into(), |v| v.to_string()),
         e.kind()
     )
 }
@@ -752,7 +773,9 @@ impl Source {
                     self.initial_len,
                 );
                 if discard_suppressed {
-                    line.push_str(" stale_discard_suppressed=1 (v13: oversize never deletes the file)");
+                    line.push_str(
+                        " stale_discard_suppressed=1 (v13: oversize never deletes the file)",
+                    );
                 }
                 if decision == SaveDecision::OverCapDiscardStale {
                     match std::fs::remove_file(&self.path) {
@@ -924,13 +947,21 @@ mod tests {
         let mut with_payload = ok.clone();
         with_payload.extend_from_slice(&[7u8; 100]);
         assert_eq!(check_header(&with_payload, 0x10de, 0x2684, &UUID), Ok(()));
-        assert_eq!(check_header(&ok[..31], 0x10de, 0x2684, &UUID), Err(HeaderReject::Short));
+        assert_eq!(
+            check_header(&ok[..31], 0x10de, 0x2684, &UUID),
+            Err(HeaderReject::Short)
+        );
         assert_eq!(
             check_header(&header(16, 1, 0x10de, 0x2684, UUID), 0x10de, 0x2684, &UUID),
             Err(HeaderReject::HeaderSize)
         );
         assert_eq!(
-            check_header(&header(4096, 1, 0x10de, 0x2684, UUID), 0x10de, 0x2684, &UUID),
+            check_header(
+                &header(4096, 1, 0x10de, 0x2684, UUID),
+                0x10de,
+                0x2684,
+                &UUID
+            ),
             Err(HeaderReject::HeaderSize),
             "a header size past the blob is corruption"
         );
@@ -938,11 +969,20 @@ mod tests {
             check_header(&header(32, 2, 0x10de, 0x2684, UUID), 0x10de, 0x2684, &UUID),
             Err(HeaderReject::HeaderVersion)
         );
-        assert_eq!(check_header(&ok, 0x1002, 0x2684, &UUID), Err(HeaderReject::Vendor));
-        assert_eq!(check_header(&ok, 0x10de, 0x2685, &UUID), Err(HeaderReject::Device));
+        assert_eq!(
+            check_header(&ok, 0x1002, 0x2684, &UUID),
+            Err(HeaderReject::Vendor)
+        );
+        assert_eq!(
+            check_header(&ok, 0x10de, 0x2685, &UUID),
+            Err(HeaderReject::Device)
+        );
         let mut other = UUID;
         other[15] ^= 1;
-        assert_eq!(check_header(&ok, 0x10de, 0x2684, &other), Err(HeaderReject::Uuid));
+        assert_eq!(
+            check_header(&ok, 0x10de, 0x2684, &other),
+            Err(HeaderReject::Uuid)
+        );
         for r in [
             HeaderReject::Short,
             HeaderReject::HeaderSize,
@@ -964,7 +1004,10 @@ mod tests {
         let mut good = header(32, 1, 1, 2, UUID);
         good.extend_from_slice(&[9u8; 64]);
         std::fs::write(&path, &good).unwrap();
-        assert_eq!(load_blob(&path, 1, 2, &UUID, 1 << 20), LoadOutcome::Loaded(good.clone()));
+        assert_eq!(
+            load_blob(&path, 1, 2, &UUID, 1 << 20),
+            LoadOutcome::Loaded(good.clone())
+        );
         match load_blob(&path, 1, 3, &UUID, 1 << 20) {
             LoadOutcome::Rejected { reason, bytes } => {
                 assert_eq!(reason, "device_mismatch");
@@ -994,31 +1037,67 @@ mod tests {
     #[test]
     fn the_path_is_per_user_and_keyed_by_vendor_device_driver_and_uuid() {
         let tmp = Path::new(if cfg!(windows) { r"C:\T" } else { "/tmp" });
-        let la = PathBuf::from(if cfg!(windows) { r"C:\Users\n\AppData\Local" } else { "/la" });
+        let la = PathBuf::from(if cfg!(windows) {
+            r"C:\Users\n\AppData\Local"
+        } else {
+            "/la"
+        });
         let xdg = PathBuf::from(if cfg!(windows) { r"C:\xdg" } else { "/xdg" });
-        let home = PathBuf::from(if cfg!(windows) { r"C:\Users\n" } else { "/home/n" });
+        let home = PathBuf::from(if cfg!(windows) {
+            r"C:\Users\n"
+        } else {
+            "/home/n"
+        });
         let (d, s) = cache_dir_from(Some(&la), Some(&xdg), Some(&home), tmp);
         assert_eq!(s, DirSource::LocalAppData);
         assert_eq!(d, la.join("reims-vgpu").join("pipeline-cache"));
         let (d, s) = cache_dir_from(None, Some(&xdg), Some(&home), tmp);
-        assert_eq!((d, s), (xdg.join("reims-vgpu").join("pipeline-cache"), DirSource::XdgCache));
+        assert_eq!(
+            (d, s),
+            (
+                xdg.join("reims-vgpu").join("pipeline-cache"),
+                DirSource::XdgCache
+            )
+        );
         let (d, s) = cache_dir_from(None, None, Some(&home), tmp);
         assert_eq!(
             (d, s),
-            (home.join(".cache").join("reims-vgpu").join("pipeline-cache"), DirSource::HomeCache)
+            (
+                home.join(".cache")
+                    .join("reims-vgpu")
+                    .join("pipeline-cache"),
+                DirSource::HomeCache
+            )
         );
         // Relative values are not trusted (they would follow the cwd).
         let (_, s) = cache_dir_from(Some(Path::new("rel")), None, None, tmp);
         assert_eq!(s, DirSource::TempFallback);
         let (d, s) = cache_dir_from(None, None, None, tmp);
-        assert_eq!((d, s), (tmp.join("reims-vgpu").join("pipeline-cache"), DirSource::TempFallback));
+        assert_eq!(
+            (d, s),
+            (
+                tmp.join("reims-vgpu").join("pipeline-cache"),
+                DirSource::TempFallback
+            )
+        );
 
         let name = cache_file_name(0x10de, 0x2684, 0x8d2a_c000, &UUID);
-        assert_eq!(name, "10de-2684-8d2ac000-3dba65df4ca4402eef670dc3bf805afd.bin");
-        assert_ne!(name, cache_file_name(0x10de, 0x2684, 0x8d2a_c001, &UUID), "driver update = new file");
+        assert_eq!(
+            name,
+            "10de-2684-8d2ac000-3dba65df4ca4402eef670dc3bf805afd.bin"
+        );
+        assert_ne!(
+            name,
+            cache_file_name(0x10de, 0x2684, 0x8d2a_c001, &UUID),
+            "driver update = new file"
+        );
         assert_ne!(name, cache_file_name(0x10de, 0x2685, 0x8d2a_c000, &UUID));
         assert_ne!(name, cache_file_name(0x1002, 0x2684, 0x8d2a_c000, &UUID));
-        assert_eq!(cache_file_name(1, 2, 3, &[0; 16]).len(), name.len(), "fixed width");
+        assert_eq!(
+            cache_file_name(1, 2, 3, &[0; 16]).len(),
+            name.len(),
+            "fixed width"
+        );
     }
 
     #[test]
@@ -1032,11 +1111,21 @@ mod tests {
         t.created_at_last = 3;
         assert_eq!(t.decide(t0 + Duration::from_secs(1), 3, i), Tick::Idle);
         assert_eq!(t.decide(t0 + Duration::from_secs(1), 4, i), Tick::TooSoon);
-        assert_eq!(t.decide(t0 + Duration::from_millis(9_999), 50, i), Tick::TooSoon);
+        assert_eq!(
+            t.decide(t0 + Duration::from_millis(9_999), 50, i),
+            Tick::TooSoon
+        );
         assert_eq!(t.decide(t0 + i, 50, i), Tick::SaveNow);
-        assert_eq!(t.decide(t0 + Duration::from_secs(3600), 3, i), Tick::Idle, "idle forever stays idle");
+        assert_eq!(
+            t.decide(t0 + Duration::from_secs(3600), 3, i),
+            Tick::Idle,
+            "idle forever stays idle"
+        );
         t.frozen = true;
-        assert_eq!(t.decide(t0 + Duration::from_secs(3600), 99, i), Tick::Frozen);
+        assert_eq!(
+            t.decide(t0 + Duration::from_secs(3600), 99, i),
+            Tick::Frozen
+        );
     }
 
     #[test]
@@ -1048,19 +1137,37 @@ mod tests {
         // The v9 shape: cold boot, saves under the bound land, 9.24 MB keeps 7.26 MB.
         assert_eq!(decide_save(0, 0, 15_260, cap), SaveDecision::Write);
         assert_eq!(decide_save(0, 15_260, 15_260, cap), SaveDecision::Unchanged);
-        assert_eq!(decide_save(0, 7_261_348, 9_235_124, cap), SaveDecision::OverCapKeepLast);
+        assert_eq!(
+            decide_save(0, 7_261_348, 9_235_124, cap),
+            SaveDecision::OverCapKeepLast
+        );
         // Warm boot from 7.26 MB that adds a little: keep.
-        assert_eq!(decide_save(7_261_348, 7_261_348, 8_500_000, cap), SaveDecision::OverCapKeepLast);
-        assert_eq!(decide_save(7_261_348, 7_261_348, 8_000_000, cap), SaveDecision::Write);
+        assert_eq!(
+            decide_save(7_261_348, 7_261_348, 8_500_000, cap),
+            SaveDecision::OverCapKeepLast
+        );
+        assert_eq!(
+            decide_save(7_261_348, 7_261_348, 8_000_000, cap),
+            SaveDecision::Write
+        );
         // Warm boot whose own compiles outgrow what it loaded: stale, rebuild.
-        assert_eq!(decide_save(3_000_000, 3_000_000, 8_400_000, cap), SaveDecision::OverCapDiscardStale);
+        assert_eq!(
+            decide_save(3_000_000, 3_000_000, 8_400_000, cap),
+            SaveDecision::OverCapDiscardStale
+        );
         // Exactly at the bound is still under it.
         assert_eq!(decide_save(0, 0, cap, cap), SaveDecision::Write);
         // The v11 Tahoe boot1 shape under the v12 50 MiB bound: it writes; past
         // that bound the keep-last arm is unchanged.
         let v12 = 50 << 20;
-        assert_eq!(decide_save(0, 6_444_408, 9_772_133, v12), SaveDecision::Write);
-        assert_eq!(decide_save(0, 50_000_000, v12 + 1, v12), SaveDecision::OverCapKeepLast);
+        assert_eq!(
+            decide_save(0, 6_444_408, 9_772_133, v12),
+            SaveDecision::Write
+        );
+        assert_eq!(
+            decide_save(0, 50_000_000, v12 + 1, v12),
+            SaveDecision::OverCapKeepLast
+        );
         for d in [
             SaveDecision::Write,
             SaveDecision::Unchanged,
@@ -1075,20 +1182,33 @@ mod tests {
     #[test]
     fn v13_the_cap_is_unbounded_unless_a_lower_limit_is_set() {
         use crate::config::Count;
-        assert_eq!(unbounded_cap_from(Count::Unset), (usize::MAX, "unbounded", None));
+        assert_eq!(
+            unbounded_cap_from(Count::Unset),
+            (usize::MAX, "unbounded", None)
+        );
         assert_eq!(
             unbounded_cap_from(Count::Narrowed(200)),
             (200 << 20, "env_lower_limit", None)
         );
         assert_eq!(
             unbounded_cap_from(Count::Refused("abc".into())),
-            (usize::MAX, "unbounded_after_refusal", Some("abc".to_string()))
+            (
+                usize::MAX,
+                "unbounded_after_refusal",
+                Some("abc".to_string())
+            )
         );
         assert_eq!(cap_text(usize::MAX), "unbounded");
         assert_eq!(cap_text(52_428_800), "52428800");
         // A 300 MB cache, far past the v12 50 MiB bound, simply writes.
-        assert_eq!(decide_save(0, 250_000_000, 300_000_000, usize::MAX), SaveDecision::Write);
-        assert_eq!(decide_save(0, 300_000_000, 300_000_000, usize::MAX), SaveDecision::Unchanged);
+        assert_eq!(
+            decide_save(0, 250_000_000, 300_000_000, usize::MAX),
+            SaveDecision::Write
+        );
+        assert_eq!(
+            decide_save(0, 300_000_000, 300_000_000, usize::MAX),
+            SaveDecision::Unchanged
+        );
         assert!(UNBOUNDED_MAX_MB_CEILING >= 1 << 20);
     }
 
@@ -1099,8 +1219,14 @@ mod tests {
         let cap = 8 << 20;
         let stale = decide_save(3_000_000, 3_000_000, 8_400_000, cap);
         assert_eq!(stale, SaveDecision::OverCapDiscardStale);
-        assert_eq!(apply_policy(stale, SavePolicy::V13), SaveDecision::OverCapKeepLast);
-        assert_eq!(apply_policy(stale, SavePolicy::V12), SaveDecision::OverCapDiscardStale);
+        assert_eq!(
+            apply_policy(stale, SavePolicy::V13),
+            SaveDecision::OverCapKeepLast
+        );
+        assert_eq!(
+            apply_policy(stale, SavePolicy::V12),
+            SaveDecision::OverCapDiscardStale
+        );
         for d in [
             SaveDecision::Write,
             SaveDecision::Unchanged,
@@ -1120,13 +1246,22 @@ mod tests {
     fn v13_a_save_that_would_leave_under_1_gib_free_is_skipped() {
         let floor = DISK_FREE_FLOOR;
         assert_eq!(disk_verdict(None, 10, floor), DiskVerdict::Unknown);
-        assert_eq!(disk_verdict(Some(floor + 100), 100, floor), DiskVerdict::Room);
+        assert_eq!(
+            disk_verdict(Some(floor + 100), 100, floor),
+            DiskVerdict::Room
+        );
         assert_eq!(
             disk_verdict(Some(floor + 100), 101, floor),
             DiskVerdict::Low { free: floor + 100 }
         );
-        assert_eq!(disk_verdict(Some(10), 100, floor), DiskVerdict::Low { free: 10 });
-        assert_eq!(disk_verdict(Some(u64::MAX), usize::MAX, 0), DiskVerdict::Room);
+        assert_eq!(
+            disk_verdict(Some(10), 100, floor),
+            DiskVerdict::Low { free: 10 }
+        );
+        assert_eq!(
+            disk_verdict(Some(u64::MAX), usize::MAX, 0),
+            DiskVerdict::Room
+        );
     }
 
     /// v13: the free-space probe answers for a real directory (and for a
@@ -1150,7 +1285,11 @@ mod tests {
         write_atomic(&path, &[1u8; 1000]).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), vec![1u8; 1000]);
         write_atomic(&path, &[2u8; 10]).unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), vec![2u8; 10], "replaced, not appended");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            vec![2u8; 10],
+            "replaced, not appended"
+        );
         let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
             .unwrap()
             .filter_map(Result::ok)

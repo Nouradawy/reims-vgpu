@@ -735,7 +735,10 @@ impl crate::observe::Decline for RenderTargetRefusal {
 /// which `AGENTS.md` names as the canonical thing that must stay quiet. It is
 /// handled here rather than in [`resolve_render_target`] so that everything the
 /// resolver can return is a genuine loss, and every one of them is reported.
-pub(super) fn lookup_render_target<M: HostMemory + HostOps, S: crate::runtime::exec::walk_ahead::WalkState>(
+pub(super) fn lookup_render_target<
+    M: HostMemory + HostOps,
+    S: crate::runtime::exec::walk_ahead::WalkState,
+>(
     state: &mut S,
     host: &M,
     task_id: u32,
@@ -769,7 +772,10 @@ pub(super) fn lookup_render_target<M: HostMemory + HostOps, S: crate::runtime::e
 /// particular: it is 240 lines with ~30 exits, it grew every one of them one
 /// bug at a time, and a source-scanning gate over it would have to understand
 /// four rungs of control flow to say anything.
-fn resolve_render_target<M: HostMemory + HostOps, S: crate::runtime::exec::walk_ahead::WalkState>(
+fn resolve_render_target<
+    M: HostMemory + HostOps,
+    S: crate::runtime::exec::walk_ahead::WalkState,
+>(
     state: &mut S,
     host: &M,
     task_id: u32,
@@ -826,7 +832,8 @@ fn resolve_render_target<M: HostMemory + HostOps, S: crate::runtime::exec::walk_
     }
     let try_mapper_ref_texture = live_type == Some(OBJECT_TYPE_MAPPER_REF_TEXTURE)
         || (live_type.is_none()
-            && state.shared()
+            && state
+                .shared()
                 .texture_to_mapping
                 .contains_key(&(task_id, resolved_ref)));
     if try_mapper_ref_texture {
@@ -839,14 +846,18 @@ fn resolve_render_target<M: HostMemory + HostOps, S: crate::runtime::exec::walk_
         // Latch is only a fallback when the list entry is transiently missing
         // (resolve_mapper_ref_texture refreshes the latch from the live descriptor).
         let mapping_id = if live_type == Some(OBJECT_TYPE_MAPPER_REF_TEXTURE) {
-            state.walk_mapper_ref_texture(host, task_id, resolved_ref).or_else(|| {
-                state.shared()
-                    .texture_to_mapping
-                    .get(&(task_id, resolved_ref))
-                    .copied()
-            })
+            state
+                .walk_mapper_ref_texture(host, task_id, resolved_ref)
+                .or_else(|| {
+                    state
+                        .shared()
+                        .texture_to_mapping
+                        .get(&(task_id, resolved_ref))
+                        .copied()
+                })
         } else {
-            state.shared()
+            state
+                .shared()
                 .texture_to_mapping
                 .get(&(task_id, resolved_ref))
                 .copied()
@@ -861,7 +872,8 @@ fn resolve_render_target<M: HostMemory + HostOps, S: crate::runtime::exec::walk_
         // (`try_mapper_ref_texture` admits nothing else), so every rung below ends at
         // `NoListEntry`: falling through reported the ladder's least specific
         // refusal for a failure the mapper-ref-texture rung had already diagnosed.
-        let m = state.shared()
+        let m = state
+            .shared()
             .mappings
             .get(&mapping_id)
             .ok_or(C::MapperRefTextureNoMapping { mapping_id }.at(resolved_ref))?;
@@ -932,7 +944,8 @@ fn resolve_render_target<M: HostMemory + HostOps, S: crate::runtime::exec::walk_
             }
             .at(resolved_ref));
         }
-        let m = state.shared()
+        let m = state
+            .shared()
             .mappings
             .get(&surface_id)
             .ok_or(C::BackingNoMapping { surface_id }.at(resolved_ref))?;

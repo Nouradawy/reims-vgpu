@@ -653,13 +653,26 @@ fn the_cursor_doorbell_queues_when_the_lockfree_switch_is_off() {
     let id = device_create(Some(cursor_test_ops()), PAGE_SHIFT_ARM64E).expect("create");
     let slot = device_slot(id).expect("device");
     slot.cursor_lockfree.store(false, Ordering::Relaxed);
-    slot.vbl_shared_gpa.store(CURSOR_TEST_GPA, Ordering::Release);
+    slot.vbl_shared_gpa
+        .store(CURSOR_TEST_GPA, Ordering::Release);
     let served_before = store_route_count("lock_free_cursor_doorbell");
     let held = slot.inner.lock();
-    assert!(device_gfx_write(id, crate::model::GFX_REG_EFI_DISPLAY_IRQ, 2, 4));
+    assert!(device_gfx_write(
+        id,
+        crate::model::GFX_REG_EFI_DISPLAY_IRQ,
+        2,
+        4
+    ));
     drop(held);
-    assert_eq!(slot.gfx_ingress.lock().len(), 1, "switch off: the write queues");
-    assert_eq!(store_route_count("lock_free_cursor_doorbell"), served_before);
+    assert_eq!(
+        slot.gfx_ingress.lock().len(),
+        1,
+        "switch off: the write queues"
+    );
+    assert_eq!(
+        store_route_count("lock_free_cursor_doorbell"),
+        served_before
+    );
     assert!(device_destroy(id));
 }
 
@@ -675,15 +688,33 @@ fn a_cursor_doorbell_is_served_lock_free_and_the_present_path_sees_it() {
     let id = device_create(Some(cursor_test_ops()), PAGE_SHIFT_ARM64E).expect("create");
     let slot = device_slot(id).expect("device");
     slot.cursor_lockfree.store(true, Ordering::Relaxed);
-    slot.vbl_shared_gpa.store(CURSOR_TEST_GPA, Ordering::Release);
+    slot.vbl_shared_gpa
+        .store(CURSOR_TEST_GPA, Ordering::Release);
     FAKE_CURSOR_WORD.store((0x123 << 16) | 0x456, Ordering::Release);
     let served_before = store_route_count("lock_free_cursor_doorbell");
 
     let inner = slot.inner.lock();
-    assert!(device_gfx_write(id, crate::model::GFX_REG_EFI_DISPLAY_IRQ, 2, crate::model::MMIO_U32));
-    assert_eq!(slot.gfx_ingress.lock().len(), 0, "the cursor doorbell must not queue");
-    assert_ne!(slot.intr_disp.load(Ordering::Acquire) & (1 << 2), 0, "IRQ bit raised");
-    assert_eq!(slot.cursor_pos.load(), (0x456, 0x123, true), "mirror moved, show kept");
+    assert!(device_gfx_write(
+        id,
+        crate::model::GFX_REG_EFI_DISPLAY_IRQ,
+        2,
+        crate::model::MMIO_U32
+    ));
+    assert_eq!(
+        slot.gfx_ingress.lock().len(),
+        0,
+        "the cursor doorbell must not queue"
+    );
+    assert_ne!(
+        slot.intr_disp.load(Ordering::Acquire) & (1 << 2),
+        0,
+        "IRQ bit raised"
+    );
+    assert_eq!(
+        slot.cursor_pos.load(),
+        (0x456, 0x123, true),
+        "mirror moved, show kept"
+    );
     assert_eq!(
         cursor_prompt_snapshot(&slot),
         vec![
@@ -697,8 +728,14 @@ fn a_cursor_doorbell_is_served_lock_free_and_the_present_path_sees_it() {
 
     let inner = slot.inner.lock();
     let cursor = &inner.device.state.cursor;
-    assert_eq!((cursor.x(), cursor.y(), cursor.show()), (0x456, 0x123, true));
-    assert!(Arc::ptr_eq(&cursor.pos, &slot.cursor_pos), "one mirror, not two");
+    assert_eq!(
+        (cursor.x(), cursor.y(), cursor.show()),
+        (0x456, 0x123, true)
+    );
+    assert!(
+        Arc::ptr_eq(&cursor.pos, &slot.cursor_pos),
+        "one mirror, not two"
+    );
     drop(inner);
     assert!(device_destroy(id));
 }
@@ -715,10 +752,17 @@ fn the_queued_cursor_doorbell_fallback_matches_the_lock_free_arm() {
     let fast = device_create(Some(cursor_test_ops()), PAGE_SHIFT_ARM64E).expect("create");
     let fast_slot = device_slot(fast).expect("device");
     fast_slot.cursor_lockfree.store(true, Ordering::Relaxed);
-    fast_slot.vbl_shared_gpa.store(CURSOR_TEST_GPA, Ordering::Release);
+    fast_slot
+        .vbl_shared_gpa
+        .store(CURSOR_TEST_GPA, Ordering::Release);
     let held = fast_slot.inner.lock();
     for w in writes {
-        assert!(device_gfx_write(fast, crate::model::GFX_REG_EFI_DISPLAY_IRQ, w, 4));
+        assert!(device_gfx_write(
+            fast,
+            crate::model::GFX_REG_EFI_DISPLAY_IRQ,
+            w,
+            4
+        ));
     }
     drop(held);
     assert_eq!(fast_slot.gfx_ingress.lock().len(), 0);
@@ -731,23 +775,43 @@ fn the_queued_cursor_doorbell_fallback_matches_the_lock_free_arm() {
     let fallback_before = store_route_count("lock_free_cursor_doorbell_fallback_no_shared_gpa");
     let held = slow_slot.inner.lock();
     for w in writes {
-        assert!(device_gfx_write(slow, crate::model::GFX_REG_EFI_DISPLAY_IRQ, w, 4));
+        assert!(device_gfx_write(
+            slow,
+            crate::model::GFX_REG_EFI_DISPLAY_IRQ,
+            w,
+            4
+        ));
     }
     drop(held);
-    assert_eq!(slow_slot.gfx_ingress.lock().len(), writes.len(), "fallback queues");
+    assert_eq!(
+        slow_slot.gfx_ingress.lock().len(),
+        writes.len(),
+        "fallback queues"
+    );
     assert_eq!(
         store_route_count("lock_free_cursor_doorbell_fallback_no_shared_gpa") - fallback_before,
         writes.len() as u64,
         "each fallback is counted under its reason"
     );
-    assert_eq!(slow_slot.intr_disp.load(Ordering::Acquire), 0, "not applied yet");
+    assert_eq!(
+        slow_slot.intr_disp.load(Ordering::Acquire),
+        0,
+        "not applied yet"
+    );
     drop(lock_for_drain(&slow_slot));
-    assert_eq!(slow_slot.gfx_ingress.lock().len(), 0, "applied at lock_for_drain");
+    assert_eq!(
+        slow_slot.gfx_ingress.lock().len(),
+        0,
+        "applied at lock_for_drain"
+    );
 
     let bits = (1u32 << 0) | (1 << 5) | (1 << 31);
     assert_eq!(fast_slot.intr_disp.load(Ordering::Acquire), bits);
     assert_eq!(slow_slot.intr_disp.load(Ordering::Acquire), bits);
-    assert_eq!(cursor_prompt_snapshot(&fast_slot), cursor_prompt_snapshot(&slow_slot));
+    assert_eq!(
+        cursor_prompt_snapshot(&fast_slot),
+        cursor_prompt_snapshot(&slow_slot)
+    );
     assert_eq!(fast_slot.cursor_pos.load(), slow_slot.cursor_pos.load());
     assert_eq!(fast_slot.cursor_pos.load(), (30, 40, true));
     assert!(device_destroy(fast));
@@ -763,12 +827,21 @@ fn an_out_of_range_cursor_doorbell_falls_back_and_raises_nothing() {
     let id = device_create(Some(cursor_test_ops()), PAGE_SHIFT_ARM64E).expect("create");
     let slot = device_slot(id).expect("device");
     slot.cursor_lockfree.store(true, Ordering::Relaxed);
-    slot.vbl_shared_gpa.store(CURSOR_TEST_GPA, Ordering::Release);
+    slot.vbl_shared_gpa
+        .store(CURSOR_TEST_GPA, Ordering::Release);
     let before = store_route_count("lock_free_cursor_doorbell_fallback_bit_range");
     let held = slot.inner.lock();
-    assert!(device_gfx_write(id, crate::model::GFX_REG_EFI_DISPLAY_IRQ, 32, 4));
+    assert!(device_gfx_write(
+        id,
+        crate::model::GFX_REG_EFI_DISPLAY_IRQ,
+        32,
+        4
+    ));
     drop(held);
-    assert_eq!(store_route_count("lock_free_cursor_doorbell_fallback_bit_range") - before, 1);
+    assert_eq!(
+        store_route_count("lock_free_cursor_doorbell_fallback_bit_range") - before,
+        1
+    );
     drop(lock_for_drain(&slot));
     assert_eq!(slot.intr_disp.load(Ordering::Acquire), 0);
     assert!(cursor_prompt_snapshot(&slot).is_empty());
@@ -784,8 +857,15 @@ fn a_reset_keeps_the_cursor_mirror_wired_to_the_slot() {
     slot.cursor_pos.store(9, 9, false);
     assert!(device_reset(id));
     let inner = slot.inner.lock();
-    assert!(Arc::ptr_eq(&inner.device.state.cursor.pos, &slot.cursor_pos));
-    assert_eq!(slot.cursor_pos.load(), (0, 0, true), "reset to a fresh state's cursor");
+    assert!(Arc::ptr_eq(
+        &inner.device.state.cursor.pos,
+        &slot.cursor_pos
+    ));
+    assert_eq!(
+        slot.cursor_pos.load(),
+        (0, 0, true),
+        "reset to a fresh state's cursor"
+    );
     drop(inner);
     assert!(device_destroy(id));
 }

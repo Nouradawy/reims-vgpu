@@ -657,7 +657,10 @@ fn a008_is_a_single_r8_component() {
         pf::MTL_FORMAT_R8_UNORM
     );
     // The stride the surface declared is the tight stride for one byte a texel.
-    assert_eq!(pf::tight_row_bytes(5120, pf::MTL_FORMAT_R8_UNORM), Some(5120));
+    assert_eq!(
+        pf::tight_row_bytes(5120, pf::MTL_FORMAT_R8_UNORM),
+        Some(5120)
+    );
     // A neighbour nobody has seen stays refused.
     assert_eq!(iosurface_pixel_format_to_mtl(0x4130_3039), 0);
 }
@@ -4891,7 +4894,6 @@ fn the_lifetime_ref_census_counts_what_it_asked_and_prices_the_packet() {
         "the second occupant of the slot is a different name"
     );
 }
-
 
 /// A cached resolution is compared against the guest's list on its first hit
 /// and then at most once per interval, not on every hit.

@@ -35,7 +35,6 @@
 //! given a synthetic key. Folding those in would inflate the working set with
 //! windows no cap change could help.
 
-
 use super::{SampledKey, SAMPLED_CACHE_BYTE_CAP, SAMPLED_REACH_BAND};
 use crate::backend::vulkan::engine::SampledContentIdentity;
 

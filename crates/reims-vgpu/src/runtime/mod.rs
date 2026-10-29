@@ -5,6 +5,8 @@
 
 /// The split of [`chain_phase`]'s largest column, `binds_us`.
 pub mod bind_phase;
+/// TEMP (lab, REIMS_VGPU_LAB_DRAW_TIMERS): exclusive draw-path wall-clock buckets.
+pub mod draw_timers;
 /// Product-path blit fill/copy execution against guest GVA.
 pub mod blit_exec;
 /// Draw-time buffer binds, resolved once per reference and held until the
@@ -16,13 +18,11 @@ pub mod blit_exec;
 pub mod bound_buffers;
 /// Guest-declared write generations for task-local GVA resources.
 pub mod buffer_write_gen;
-pub mod inflight_reads;
 /// Always-on proxies and censuses, one per measured bug class.
 pub mod census;
 /// Where a draw chain's wall clock goes on the runtime side of the engine
 /// boundary, which is 82% of it.
 pub mod chain_phase;
-pub(crate) mod cost_opts;
 /// The byte runs in which a newly rendered row differs from the guest's.
 pub mod changed_runs;
 /// Product-path compute bind/dispatch (pipeline + buffers + direct dispatch).
@@ -37,6 +37,7 @@ pub mod compute_exec;
 // that makes each one greppable.
 #[allow(clippy::result_large_err, clippy::large_enum_variant)]
 pub mod compute_session;
+pub(crate) mod cost_opts;
 pub mod decode;
 pub mod drain;
 /// The always-on log sink every decline and census writes to
@@ -53,6 +54,7 @@ pub mod gpa_map;
 /// The last few pieces of work handed to the GPU, so a host GPU hang can name
 /// what it was running instead of only that a fence stopped signalling.
 pub mod gpu_hang_trail;
+pub mod inflight_reads;
 /// TEMP (lab): switches that follow a host-written file, for A/B phases inside one boot.
 pub(crate) mod lab_live;
 /// The bound on every GPU reference to guest RAM — one import per RAMBlock,
@@ -92,9 +94,9 @@ pub mod iosurface_registry;
 /// TEMP (lab, `REIMS_VGPU_LAB_CH2_RETURN_CNT`): the returning-IOSurface census
 /// on ch2 map/unmap, sizing the guest import-cache lever.
 pub mod lab_ch2ret;
-pub(crate) mod lab_video;
 pub mod lab_repeat;
 pub mod lab_runs;
+pub(crate) mod lab_video;
 
 /// Metal draw encode + writeback when MTLBs resolve.
 // See the note on `backend::metal`: `Status` is a 264-byte `Copy` payload
@@ -135,13 +137,13 @@ pub mod released_pages;
 /// or a guest-memory reader makes the bytes observable.
 pub mod render_pass;
 pub mod render_writeback;
-pub mod ring_tail;
-pub mod ring_ingest;
 /// A rail's own name for a resident render target, opaque to the layers that
 /// carry it. See the module doc for the ledger this exists for.
 pub mod resident_target;
 /// The guest's per-resource validity quad, from both of its producers.
 pub mod resource_validity;
+pub mod ring_ingest;
+pub mod ring_tail;
 /// The split of [`chain_phase`]'s largest *undivided* column, `sampled_us`.
 pub mod sampled_phase;
 /// Guest surface → host BGRA8 for the QEMU console.
@@ -163,10 +165,10 @@ pub mod surface_currency;
 pub mod task_slot;
 /// Texture / mapper-ref-texture geometry registration.
 pub mod texture;
-/// Track host-authoritative surface and GVA frames, and transfer them on demand.
-pub mod writeback_debt;
 /// TEMP (lab): writer-witness generation reads off the drain.
 pub mod write_baseline;
+/// Track host-authoritative surface and GVA frames, and transfer them on demand.
+pub mod writeback_debt;
 
 /// The unit-test host double, gated with its definition. An ungated re-export
 /// would keep it reachable and so keep it in the staticlib.

@@ -2811,7 +2811,10 @@ impl CursorMirror {
         let mut cur = self.0.load(Ordering::Acquire);
         loop {
             let next = (cur & !Self::XY) | xy;
-            match self.0.compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire) {
+            match self
+                .0
+                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
+            {
                 Ok(_) => break,
                 Err(seen) => cur = seen,
             }
@@ -3271,7 +3274,10 @@ impl DrainU64 {
     }
     #[inline]
     pub fn bump(&self) {
-        self.0.store(self.get().wrapping_add(1), std::sync::atomic::Ordering::Relaxed);
+        self.0.store(
+            self.get().wrapping_add(1),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
     #[inline]
     pub fn set(&self, v: u64) {
@@ -3711,6 +3717,10 @@ pub struct DeviceState {
     /// be right the moment a caller reached the cap with a zero-keyed
     /// candidate. Anything that changes when the cap runs must re-check this.
     pub compute_storage_residency: BTreeMap<ComputeStorageResidencyKey, u32>,
+    /// Previous reusable compute result, scoped to this device session.
+    #[cfg(feature = "backend-vulkan")]
+    pub(crate) compute_dispatch_memo:
+        crate::runtime::compute_exec::vulkan::dispatch_memo::DispatchMemo,
     /// Mapping ids the fence-bound writeback has landed a render window on,
     /// for one measurement and nothing else: does the guest declare its CPU
     /// reads on the same surfaces this device writes back eagerly?
@@ -3964,6 +3974,8 @@ impl DeviceState {
             gva_eviction_witness: GvaEvictionWitness::default(),
             host_linear_textures: BTreeMap::new(),
             compute_storage_residency: BTreeMap::new(),
+            #[cfg(feature = "backend-vulkan")]
+            compute_dispatch_memo: Default::default(),
             fence_flushed_mappings: std::collections::BTreeSet::new(),
             surface_write_kind: BTreeMap::new(),
             present: PresentState::default(),

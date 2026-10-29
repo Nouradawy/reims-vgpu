@@ -1919,6 +1919,10 @@ impl DrainDutyCensus {
         };
         total.fetch_add(us, Relaxed);
         count.fetch_add(1, Relaxed);
+        #[cfg(feature = "backend-vulkan")]
+        if matches!(phase, DrainPhase::Draw) {
+            crate::backend::vulkan::engine::note_drain_draw_us(us);
+        }
         if let DrainPhase::Flush(rail) = phase {
             self.max_flush_us.fetch_max(us, Relaxed);
             let i = rail.index();
@@ -2337,6 +2341,8 @@ impl DrainDutyCensus {
         let irq_wait_max = self.irq_wait_max_us.swap(0, Relaxed);
         let busy = drain.saturating_add(publish);
         let duty = busy as f64 / (win_ms as f64 * 1000.0);
+        // TEMP (lab, REIMS_VGPU_LAB_DRAW_TIMERS): empty when the switch is off.
+        let draw_timers = crate::runtime::draw_timers::take_fields();
         Some(format!(
             "drain_duty win_ms={win_ms} tranches={tranches} skipped={skipped} busy_us={busy} \
              duty={duty:.3} drain_us={drain} publish_us={publish} max_tranche_us={max} \
@@ -2350,7 +2356,7 @@ impl DrainDutyCensus {
              proc_us={proc_us} regs_us={regs} regs_ops={regs_ops}{regs_split} \
              setup_us={setup} setup_calls={setup_calls} \
              slow_tranches={slow}/{tranches} slow_us={DRAIN_TRANCHE_SLOW_US} \
-             ecore_us={ecore_us} ecore_tranches={ecore_tranches}"
+             ecore_us={ecore_us} ecore_tranches={ecore_tranches}{draw_timers}"
         ))
     }
 }
@@ -2885,7 +2891,9 @@ pub(crate) mod lab_gap {
             if listed < 160 && e.kind != VBL && e.kind != IRQ {
                 listed += 1;
                 match e.kind {
-                    PUBLISHED => list.push_str(&format!("P{}t{}l{}@{ms},", e.a, e.b as i32, e.c / 1000)),
+                    PUBLISHED => {
+                        list.push_str(&format!("P{}t{}l{}@{ms},", e.a, e.b as i32, e.c / 1000))
+                    }
                     _ => list.push_str(&format!("D{}@{ms},", e.a)),
                 }
             } else if listed < 160 && e.kind == VBL {
@@ -3762,8 +3770,8 @@ pub(crate) fn route_census_on() -> bool {
         1 => true,
         2 => false,
         _ => {
-            let on = cfg!(test)
-                || std::env::var("REIMS_VGPU_LAB_ROUTES").map_or(true, |v| v != "off");
+            let on =
+                cfg!(test) || std::env::var("REIMS_VGPU_LAB_ROUTES").map_or(true, |v| v != "off");
             STATE.store(if on { 1 } else { 2 }, Relaxed);
             on
         }
@@ -3786,14 +3794,15 @@ pub fn note_store_route_n(route: &'static str, n: u64) {
                 counter.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
                 return;
             }
-            let counter = {
-                let Ok(mut routes) = STORE_ROUTES.lock() else {
-                    return;
+            let counter =
+                {
+                    let Ok(mut routes) = STORE_ROUTES.lock() else {
+                        return;
+                    };
+                    std::sync::Arc::clone(routes.entry(route).or_insert_with(|| {
+                        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0))
+                    }))
                 };
-                std::sync::Arc::clone(routes.entry(route).or_insert_with(|| {
-                    std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0))
-                }))
-            };
             counter.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
             cache.borrow_mut().insert(route, counter);
         });
@@ -3946,11 +3955,7 @@ mod route_cache_tests {
                 }
                 for (i, name) in names.iter().enumerate() {
                     let each = 1 + (i as u64 % 4);
-                    assert_eq!(
-                        store_route_count(name),
-                        3 * each + 3,
-                        "{name} on={on}"
-                    );
+                    assert_eq!(store_route_count(name), 3 * each + 3, "{name} on={on}");
                 }
             });
         }

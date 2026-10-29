@@ -3138,7 +3138,9 @@ fn res_xmemo_get(names_gen: u64, task_id: u32, obj_ref: u32) -> Option<Arc<TaskR
             m.names_gen = names_gen;
             return None;
         }
-        m.map.get(&(task_id, obj_ref)).and_then(std::sync::Weak::upgrade)
+        m.map
+            .get(&(task_id, obj_ref))
+            .and_then(std::sync::Weak::upgrade)
     })
 }
 
@@ -3172,6 +3174,8 @@ pub fn resolve_resource<M: HostMemory>(
     task_id: u32,
     obj_ref: u32,
 ) -> Result<Arc<TaskResource>, LadderRung> {
+    // TEMP (lab, REIMS_VGPU_LAB_DRAW_TIMERS)
+    let _dt = crate::runtime::draw_timers::span(crate::runtime::draw_timers::Bucket::Resolve);
     // The namespace decides whether this reference still names anything, and the
     // memo is keyed by its answer. A slot the guest has deleted resolves to
     // nothing, so the retained bytes behind the name it used to have are
@@ -5104,7 +5108,10 @@ pub fn replace_physical<H: HostMemory + crate::runtime::host::HostOps>(
     // so taking it here changes no outcome — it changes whether the loss has a
     // name. `drop_windows` reports each one against this packet instead of
     // letting it disappear into a generation mismatch nothing attributes.
-    if crate::runtime::scanout::lab_gpx_all().iter().any(|(m, _, _)| *m == target) {
+    if crate::runtime::scanout::lab_gpx_all()
+        .iter()
+        .any(|(m, _, _)| *m == target)
+    {
         crate::observe::fail(format!(
             "lab_debt replace_physical task={task_id} object={object_id} mid={target} owed={} map_gen={:?}",
             state.pending_writebacks.get(target).is_some(),

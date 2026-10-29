@@ -64,9 +64,9 @@ use reims_vgpu_protocol::pass_action::{
 // The Vulkan half of this path, named rather than re-exported flat — the
 // sibling of `metal`, and gated once here rather than per item.
 #[cfg(feature = "backend-vulkan")]
-pub mod vulkan;
-#[cfg(feature = "backend-vulkan")]
 pub mod synthesized_sampled;
+#[cfg(feature = "backend-vulkan")]
+pub mod vulkan;
 // Only for `exec`'s pass-extent census, which declares its own copy of these
 // bands because it runs on every backend. See
 // `the_two_coverage_censuses_use_the_same_bands`.
@@ -1260,6 +1260,8 @@ fn resolve_buffer_backing<M: HostMemory>(
     buffer_ref: u32,
     resource: Option<&crate::model::TaskResource>,
 ) -> Option<BufferBacking> {
+    // TEMP (lab, REIMS_VGPU_LAB_DRAW_TIMERS)
+    let _dt = crate::runtime::draw_timers::span(crate::runtime::draw_timers::Bucket::Resolve);
     if buffer_ref == 0 {
         return None;
     }
@@ -1696,7 +1698,10 @@ pub(crate) fn lab_buftex_native() -> bool {
     }
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        let on = matches!(std::env::var("REIMS_VGPU_LAB_BUFTEX_NATIVE").as_deref(), Ok("on"));
+        let on = matches!(
+            std::env::var("REIMS_VGPU_LAB_BUFTEX_NATIVE").as_deref(),
+            Ok("on")
+        );
         crate::observe::off(format!("lab_buftex_native on={}", u8::from(on)));
         on
     })
@@ -1827,7 +1832,10 @@ pub(crate) fn lab_buftex_memo() -> bool {
     }
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        let on = !matches!(std::env::var("REIMS_VGPU_LAB_BUFTEX_MEMO").as_deref(), Ok("off"));
+        let on = !matches!(
+            std::env::var("REIMS_VGPU_LAB_BUFTEX_MEMO").as_deref(),
+            Ok("off")
+        );
         crate::observe::off(format!("lab_buftex_memo on={}", u8::from(on)));
         on
     })
@@ -2795,12 +2803,23 @@ pub fn mrt_draw_request<M: HostMemory + HostOps>(
     clears: &[crate::runtime::render_pass::ColorAttachment],
     draw: crate::protocol::draw::DrawArgs,
 ) -> Option<DrawEncodeRequest> {
-    mrt_draw_request_with(state, host, task_id, pipeline_ref, color_slots, clears, draw)
+    mrt_draw_request_with(
+        state,
+        host,
+        task_id,
+        pipeline_ref,
+        color_slots,
+        clears,
+        draw,
+    )
 }
 
 /// [`mrt_draw_request`] over a walk state (TEMP lab, FRAME_GATE: a spec
 /// request ahead of execution answers only warm targets).
-pub fn mrt_draw_request_with<M: HostMemory + HostOps, S: crate::runtime::exec::walk_ahead::WalkState>(
+pub fn mrt_draw_request_with<
+    M: HostMemory + HostOps,
+    S: crate::runtime::exec::walk_ahead::WalkState,
+>(
     state: &mut S,
     host: &mut M,
     task_id: u32,
@@ -2817,8 +2836,12 @@ pub fn mrt_draw_request_with<M: HostMemory + HostOps, S: crate::runtime::exec::w
     // bound pipeline supplies the missing contract: every color attachment
     // must match its raster sample count. Resolve that before LOAD/CLEAR seed
     // policy and before this request is cloned by either encoder.
-    let pipeline_sample_count =
-        crate::backend::selected().pipeline_raster_sample_count(state.shared(), host, task_id, pipeline_ref);
+    let pipeline_sample_count = crate::backend::selected().pipeline_raster_sample_count(
+        state.shared(),
+        host,
+        task_id,
+        pipeline_ref,
+    );
     let mut colors = Vec::new();
     let mut base_w = 0u32;
     let mut base_h = 0u32;
@@ -2942,7 +2965,11 @@ pub fn mrt_draw_request_with<M: HostMemory + HostOps, S: crate::runtime::exec::w
         };
         let (multisample_source_gva, multisample_source_format, multisample_source_row_stride) =
             if multisample_source_ref != 0 && source_target.mapping_id == 0 {
-                (source_target.target_gva, source_target.format, source_target.row_stride)
+                (
+                    source_target.target_gva,
+                    source_target.format,
+                    source_target.row_stride,
+                )
             } else {
                 (0, 0, 0)
             };
@@ -3459,7 +3486,8 @@ impl StoreTargetPages {
     /// The same pages as a membership test, which is the bound
     /// [`write_gva_rgba8_within`] takes.
     pub(crate) fn membership(&self) -> &std::collections::HashSet<u64> {
-        self.set.get_or_init(|| self.ordered.iter().copied().collect())
+        self.set
+            .get_or_init(|| self.ordered.iter().copied().collect())
     }
 
     /// Page GPAs in GVA order, **only** when the walk resolved every page of
@@ -4189,7 +4217,16 @@ fn seed_color_load<M: HostMemory + HostOps>(
     width: u32,
     height: u32,
 ) -> Option<Vec<u8>> {
-    match seed_color_load_or_zero(state, host, task_id, texture_ref, target_gva, width, height, None)? {
+    match seed_color_load_or_zero(
+        state,
+        host,
+        task_id,
+        texture_ref,
+        target_gva,
+        width,
+        height,
+        None,
+    )? {
         ColorSeed::Bytes(bytes) => Some(bytes),
         ColorSeed::Zero => Some(vec![0u8; (width as usize) * (height as usize) * 4]),
     }
@@ -4499,21 +4536,25 @@ fn seed_color_load_or_zero<M: HostMemory + HostOps>(
     }
     #[cfg(feature = "backend-vulkan")]
     let native = {
-        let fmt = format.filter(|&f| f != 0).or_else(|| {
-            if texture_ref != 0 {
-                let (tex_ref, _, fmt_override) = resolve_texture_view(state, host, task_id, texture_ref)
-                    .map(|view| (view.base_texture_ref, view.level, view.pixel_format))
-                    .unwrap_or((texture_ref, 0, None));
-                fmt_override.or_else(|| {
-                    objects::lookup_list_entry(state, host, task_id, tex_ref)
-                        .and_then(|e| objects::read_descriptor(state, host, task_id, &e))
-                        .and_then(|d| decode_texture_descriptor(&d).ok())
-                        .map(|t| t.pixel_format)
-                })
-            } else {
-                None
-            }
-        }).unwrap_or(0);
+        let fmt = format
+            .filter(|&f| f != 0)
+            .or_else(|| {
+                if texture_ref != 0 {
+                    let (tex_ref, _, fmt_override) =
+                        resolve_texture_view(state, host, task_id, texture_ref)
+                            .map(|view| (view.base_texture_ref, view.level, view.pixel_format))
+                            .unwrap_or((texture_ref, 0, None));
+                    fmt_override.or_else(|| {
+                        objects::lookup_list_entry(state, host, task_id, tex_ref)
+                            .and_then(|e| objects::read_descriptor(state, host, task_id, &e))
+                            .and_then(|d| decode_texture_descriptor(&d).ok())
+                            .map(|t| t.pixel_format)
+                    })
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
         let mut n = vulkan::native_uploads_for(fmt);
         n.bgra8 = false;
         n
@@ -4786,7 +4827,12 @@ fn load_sampled_rgba_static<M: HostMemory + HostOps>(
     // to do, silently) dropped the texture from the draw entirely.
     let (tex_ref, level, slice, fmt_override) =
         if let Some(view) = resolve_texture_view(state, host, task_id, texture_ref) {
-            (view.base_texture_ref, view.level, Some(view.slice), view.pixel_format)
+            (
+                view.base_texture_ref,
+                view.level,
+                Some(view.slice),
+                view.pixel_format,
+            )
         } else {
             (texture_ref, 0, None, None)
         };
@@ -4922,23 +4968,50 @@ mod srgb_resolve_pair_tests {
 
     #[test]
     fn sibling_pairs_admit_when_enabled() {
-        assert_eq!(srgb_resolve_pair(0x51, 0x50, true), SrgbResolvePair::Admitted);
-        assert_eq!(srgb_resolve_pair(0x50, 0x51, true), SrgbResolvePair::Admitted);
-        assert_eq!(srgb_resolve_pair(0x47, 0x46, true), SrgbResolvePair::Admitted);
-        assert_eq!(srgb_resolve_pair(0x46, 0x47, true), SrgbResolvePair::Admitted);
+        assert_eq!(
+            srgb_resolve_pair(0x51, 0x50, true),
+            SrgbResolvePair::Admitted
+        );
+        assert_eq!(
+            srgb_resolve_pair(0x50, 0x51, true),
+            SrgbResolvePair::Admitted
+        );
+        assert_eq!(
+            srgb_resolve_pair(0x47, 0x46, true),
+            SrgbResolvePair::Admitted
+        );
+        assert_eq!(
+            srgb_resolve_pair(0x46, 0x47, true),
+            SrgbResolvePair::Admitted
+        );
     }
 
     #[test]
     fn non_siblings_decline() {
-        assert_eq!(srgb_resolve_pair(0x51, 0x46, true), SrgbResolvePair::NotSiblings);
-        assert_eq!(srgb_resolve_pair(0x50, 0x46, true), SrgbResolvePair::NotSiblings);
-        assert_eq!(srgb_resolve_pair(0x51, 0x51, true), SrgbResolvePair::NotSiblings);
-        assert_eq!(srgb_resolve_pair(0x73, 0x50, true), SrgbResolvePair::NotSiblings);
+        assert_eq!(
+            srgb_resolve_pair(0x51, 0x46, true),
+            SrgbResolvePair::NotSiblings
+        );
+        assert_eq!(
+            srgb_resolve_pair(0x50, 0x46, true),
+            SrgbResolvePair::NotSiblings
+        );
+        assert_eq!(
+            srgb_resolve_pair(0x51, 0x51, true),
+            SrgbResolvePair::NotSiblings
+        );
+        assert_eq!(
+            srgb_resolve_pair(0x73, 0x50, true),
+            SrgbResolvePair::NotSiblings
+        );
     }
 
     #[test]
     fn disabled_env_declines_siblings() {
-        assert_eq!(srgb_resolve_pair(0x51, 0x50, false), SrgbResolvePair::Disabled);
+        assert_eq!(
+            srgb_resolve_pair(0x51, 0x50, false),
+            SrgbResolvePair::Disabled
+        );
     }
 }
 

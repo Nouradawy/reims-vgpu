@@ -45,7 +45,8 @@ impl ResourcePools {
                 self.entry.gather_live.extend(pending.gather);
                 self.entry.readback_multi_live.extend(pending.readback);
                 self.entry.sampled_live.extend(pending.sampled);
-                self.entry.attachment_snapshot_live
+                self.entry
+                    .attachment_snapshot_live
                     .extend(pending.attachment_snapshots);
                 self.entry.storage_image_live.extend(pending.storage_images);
                 // TEMP (lab, PASS_STAGE): the fences above were waited (or
@@ -181,6 +182,7 @@ impl ResourcePools {
             device.destroy_image(s.image, None);
             device.free_memory(s.memory, None);
         }
+        self.sampled_memo_destroy_all(device);
         for (_, resident) in self.compute_storage_registry.drain() {
             device.destroy_image_view(resident.slot.view, None);
             device.destroy_image(resident.slot.image, None);

@@ -258,7 +258,16 @@ fn decode_texture_view_hop_reasoned<M: HostMemory + HostOps>(
     host: &M,
     task_id: u32,
     texture_ref: u32,
-) -> Result<(u32, u32, u32, Option<pixel_format::SwizzlePlan>, Option<u16>), TextureViewDecline> {
+) -> Result<
+    (
+        u32,
+        u32,
+        u32,
+        Option<pixel_format::SwizzlePlan>,
+        Option<u16>,
+    ),
+    TextureViewDecline,
+> {
     use crate::runtime::decode::resource::{
         decode_texture_view_descriptor, texture_view_header, OBJECT_TYPE_TEXTURE_VIEW,
     };
@@ -415,6 +424,8 @@ pub(super) fn resolve_texture_view<M: HostMemory + HostOps>(
     task_id: u32,
     texture_ref: u32,
 ) -> Option<ViewResolve> {
+    // TEMP (lab, REIMS_VGPU_LAB_DRAW_TIMERS)
+    let _dt = crate::runtime::draw_timers::span(crate::runtime::draw_timers::Bucket::Resolve);
     resolve_texture_view_reasoned(state, host, task_id, texture_ref).ok()
 }
 
@@ -591,7 +602,7 @@ pub(super) fn apply_view_swizzle_rgba8(
 /// this path failing drops a whole draw (`draw_vk_nothing_stored`), and the
 /// draw it was observed dropping is the WindowServer's full-screen composite.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LinearLoadRefusal {
+pub enum LinearLoadRefusal {
     /// The texture ref is not in this task's object list.
     ObjectListMiss,
     /// The list entry is not a texture or texture variant.
@@ -607,6 +618,9 @@ pub(crate) enum LinearLoadRefusal {
     ViewFormatBppMismatch { base: u16, view: u16 },
     /// The requested mip level has no address/layout in the descriptor.
     NoLevelGva { level: u32 },
+    /// The mip's extent, plane count or upload layout disagrees with its chain.
+    #[cfg(feature = "backend-vulkan")]
+    MipLayoutMismatch { level: u32 },
     /// This format has no bytes-per-pixel in the contract table, so no row
     /// length can be computed for it.
     FormatBppUnknown { format: u16 },
@@ -653,6 +667,8 @@ impl crate::observe::Decline for LinearLoadRefusal {
             Self::NoPixelFormat => "linear_load_no_pixel_format",
             Self::ViewFormatBppMismatch { .. } => "linear_load_view_bpp_mismatch",
             Self::NoLevelGva { .. } => "linear_load_no_level_gva",
+            #[cfg(feature = "backend-vulkan")]
+            Self::MipLayoutMismatch { .. } => "linear_load_mip_layout_mismatch",
             Self::FormatBppUnknown { .. } => "linear_load_format_bpp_unknown",
             Self::RowStrideBelowTight { .. } => "linear_load_stride_below_tight",
             Self::ZeroExtent { .. } => "linear_load_zero_extent",
@@ -674,6 +690,8 @@ impl crate::observe::Decline for LinearLoadRefusal {
                 ("view_fmt", format!("{view:#x}")),
             ],
             Self::NoLevelGva { level } => vec![("level", level.to_string())],
+            #[cfg(feature = "backend-vulkan")]
+            Self::MipLayoutMismatch { level } => vec![("level", level.to_string())],
             Self::FormatBppUnknown { format } | Self::RowConvertUnsupported { format } => {
                 vec![("fmt", format!("{format:#x}"))]
             }
@@ -729,7 +747,68 @@ pub(crate) fn load_linear_texture_host<M: HostMemory + HostOps>(
     .ok()
 }
 
-/// Load all six faces of a cube texture, tightly packed face after face — the
+/// Materialize each declared 2D mip through the ordinary settled guest reader.
+/// A missing or incompatible level refuses the chain; it never becomes a
+/// successful one-level upload. Resident chains keep their separate GPU route.
+#[cfg(feature = "backend-vulkan")]
+pub(crate) struct LoadedMipChain {
+    pub(crate) levels: Vec<std::sync::Arc<Vec<u8>>>,
+    pub(crate) format: SampledByteFormat,
+}
+
+#[cfg(feature = "backend-vulkan")]
+pub(crate) fn load_linear_mip_chain<M: HostMemory + HostOps>(
+    state: &mut DeviceState,
+    host: &mut M,
+    task_id: u32,
+    texture_ref: u32,
+    tex: &crate::runtime::decode::resource::TextureDescriptor,
+    native: NativeUploads,
+) -> Result<LoadedMipChain, LinearLoadRefusal> {
+    use LinearLoadRefusal as R;
+    let (_, base) = tex
+        .level_gva(0, state.page_shift)
+        .ok_or(R::NoLevelGva { level: 0 })?;
+    let max_levels = u32::BITS - base.width.max(base.height).leading_zeros();
+    if tex.mipmap_level_count < 2 || tex.mipmap_level_count > max_levels {
+        return Err(R::MipLayoutMismatch { level: 0 });
+    }
+    let mut levels = Vec::with_capacity(tex.mipmap_level_count as usize);
+    let mut byte_format = None;
+    for level in 0..tex.mipmap_level_count {
+        let (_, layout) = tex
+            .level_gva(level, state.page_shift)
+            .ok_or(R::NoLevelGva { level })?;
+        if layout.width != reims_vgpu_protocol::extent::mip_extent(base.width, level)
+            || layout.height != reims_vgpu_protocol::extent::mip_extent(base.height, level)
+            || layout.planes() != 1
+        {
+            return Err(R::MipLayoutMismatch { level });
+        }
+        let (bytes, format) = load_linear_texture_impl(
+            state,
+            host,
+            task_id,
+            texture_ref,
+            level,
+            None,
+            None,
+            native,
+            crate::runtime::render_writeback::SettleSite::LinearTextureSampled,
+        )?;
+        if byte_format.is_some_and(|prior| prior != format) {
+            return Err(R::MipLayoutMismatch { level });
+        }
+        byte_format = Some(format);
+        levels.push(std::sync::Arc::new(bytes));
+    }
+    Ok(LoadedMipChain {
+        levels,
+        format: byte_format.expect("a validated chain has at least two levels"),
+    })
+}
+
+/// Load all six faces of one cube mip, tightly packed face after face — the
 /// layer order `VkBufferImageCopy` consumes with `layerCount = 6`.
 ///
 /// Metal stores a cube as a six-slice array, and this device's measured
@@ -739,19 +818,20 @@ pub(crate) fn load_linear_texture_host<M: HostMemory + HostOps>(
 /// fallback — serves a cube exactly as it serves the equivalent 2D texture, and
 /// a divergence between the two is not expressible.
 ///
-/// Level 0 only, which is what the sampled bind path uploads for every shape
-/// (the engine creates its sampled images with one mip). The faces must agree
-/// on their byte layout by construction — one descriptor, one format — so the
-/// per-face formats are asserted equal rather than reconciled.
+/// The faces must agree on their byte layout by construction — one descriptor,
+/// one format — so the per-face formats are asserted equal rather than
+/// reconciled. [`load_cube_faces`] is the level-zero compatibility wrapper;
+/// [`load_cube_mip_chain`] calls this helper for every descriptor level.
 // The Vulkan bind path is the only caller; the Metal arm's cube support is
 // native and never reloads faces on the CPU, so ungated this is dead code
 // there — which the cross-compiled clippy run is what catches.
 #[cfg(feature = "backend-vulkan")]
-pub(crate) fn load_cube_faces<M: HostMemory + HostOps>(
+fn load_cube_level<M: HostMemory + HostOps>(
     state: &mut DeviceState,
     host: &mut M,
     task_id: u32,
     texture_ref: u32,
+    level: u32,
     native: NativeUploads,
     site: crate::runtime::render_writeback::SettleSite,
 ) -> Result<(Vec<u8>, SampledByteFormat), LinearLoadRefusal> {
@@ -762,8 +842,17 @@ pub(crate) fn load_cube_faces<M: HostMemory + HostOps>(
     // Face zero is read first so the format and the whole capacity are known
     // before the loop, which is what lets the six faces pack with one
     // allocation and leaves no "no face was read" case to invent a refusal for.
-    let (first_bytes, format) =
-        load_linear_texture_impl(state, host, task_id, texture_ref, 0, Some(0), None, native, site)?;
+    let (first_bytes, format) = load_linear_texture_impl(
+        state,
+        host,
+        task_id,
+        texture_ref,
+        level,
+        Some(0),
+        None,
+        native,
+        site,
+    )?;
     let mut packed: Vec<u8> = Vec::with_capacity(first_bytes.len() * CUBE_FACES as usize);
     packed.extend_from_slice(&first_bytes);
     drop(first_bytes);
@@ -773,7 +862,7 @@ pub(crate) fn load_cube_faces<M: HostMemory + HostOps>(
             host,
             task_id,
             texture_ref,
-            0,
+            level,
             Some(face),
             None,
             native,
@@ -788,6 +877,74 @@ pub(crate) fn load_cube_faces<M: HostMemory + HostOps>(
         packed.extend_from_slice(&bytes);
     }
     Ok((packed, format))
+}
+
+/// Load level zero of a cube texture.  Kept as a small explicit wrapper for
+/// call sites that have already proved a one-level cube.
+#[cfg(feature = "backend-vulkan")]
+pub(crate) fn load_cube_faces<M: HostMemory + HostOps>(
+    state: &mut DeviceState,
+    host: &mut M,
+    task_id: u32,
+    texture_ref: u32,
+    native: NativeUploads,
+    site: crate::runtime::render_writeback::SettleSite,
+) -> Result<(Vec<u8>, SampledByteFormat), LinearLoadRefusal> {
+    load_cube_level(state, host, task_id, texture_ref, 0, native, site)
+}
+
+/// Materialize every declared cube mip.  Each element contains six tightly
+/// packed faces for that level, so the Vulkan upload can use one layered copy
+/// per mip rather than incorrectly treating face zero as a complete cube.
+#[cfg(feature = "backend-vulkan")]
+pub(crate) fn load_cube_mip_chain<M: HostMemory + HostOps>(
+    state: &mut DeviceState,
+    host: &mut M,
+    task_id: u32,
+    texture_ref: u32,
+    tex: &crate::runtime::decode::resource::TextureDescriptor,
+    native: NativeUploads,
+) -> Result<LoadedMipChain, LinearLoadRefusal> {
+    use LinearLoadRefusal as R;
+    let (_, base) = tex
+        .level_gva(0, state.page_shift)
+        .ok_or(R::NoLevelGva { level: 0 })?;
+    if base.width != base.height {
+        return Err(R::MipLayoutMismatch { level: 0 });
+    }
+    let max_levels = u32::BITS - base.width.leading_zeros();
+    if tex.mipmap_level_count < 2 || tex.mipmap_level_count > max_levels {
+        return Err(R::MipLayoutMismatch { level: 0 });
+    }
+    let mut levels = Vec::with_capacity(tex.mipmap_level_count as usize);
+    let mut byte_format = None;
+    for level in 0..tex.mipmap_level_count {
+        let (_, layout) = tex
+            .level_gva(level, state.page_shift)
+            .ok_or(R::NoLevelGva { level })?;
+        let extent = reims_vgpu_protocol::extent::mip_extent(base.width, level);
+        if layout.width != extent || layout.height != extent || layout.planes() != 1 {
+            return Err(R::MipLayoutMismatch { level });
+        }
+        let (faces, format) = load_cube_level(
+            state,
+            host,
+            task_id,
+            texture_ref,
+            level,
+            native,
+            crate::runtime::render_writeback::SettleSite::LinearTextureSampled,
+        )?;
+        if byte_format.is_some_and(|prior| prior != format) {
+            return Err(R::MipLayoutMismatch { level });
+        }
+        byte_format = Some(format);
+        levels.push(std::sync::Arc::new(faces));
+    }
+    Ok(LoadedMipChain {
+        levels,
+        format: byte_format.expect("a validated cube chain has at least two levels"),
+    })
 }
 
 /// Which non-RGBA8 sampled layouts a caller of the linear loaders will carry.
@@ -842,6 +999,9 @@ pub(crate) struct NativeUploads {
     /// `SAMPLED_IMAGE_FILTER_LINEAR`, so the filter is measured rather than
     /// assumed.
     pub float32: bool,
+    /// Preserve normalized sixteen-bit RGBA texels when the host can filter
+    /// their native layout. They have no RGBA8 CPU conversion arm.
+    pub unorm16: bool,
 }
 
 impl NativeUploads {
@@ -852,6 +1012,7 @@ impl NativeUploads {
         float16: false,
         block_compressed: false,
         float32: false,
+        unorm16: false,
     };
 
     /// Native BGRA8 only — the answer this parameter carried when it was a
@@ -868,6 +1029,7 @@ impl NativeUploads {
         float16: false,
         block_compressed: false,
         float32: false,
+        unorm16: false,
     };
 
     /// Every native layout the loaders can produce — every gate open at once.
@@ -892,6 +1054,7 @@ impl NativeUploads {
         float16: true,
         block_compressed: true,
         float32: true,
+        unorm16: true,
     };
 }
 
@@ -936,6 +1099,9 @@ pub(crate) fn linear_native_upload_format(
     native: NativeUploads,
 ) -> Option<TexelLayout> {
     use pixel_format::SampledClass;
+    if sample_format == pixel_format::MTL_FORMAT_RGBA16_UNORM {
+        return native.unorm16.then_some(TexelLayout::Rgba16Unorm);
+    }
     // The compressed families are answered before the sampled class, because
     // that vocabulary has no block in it and because the answer here is not an
     // optimisation: a BC bind is native or it is a refusal. `None` when the host
@@ -1443,6 +1609,36 @@ where
 mod texture_view_split_tests {
     use super::*;
     use crate::runtime::decode::resource::TextureViewDescriptor;
+
+    #[cfg(feature = "backend-vulkan")]
+    #[test]
+    fn normalized_sixteen_bit_upload_preserves_native_texels_and_requires_host_support() {
+        let format = pixel_format::MTL_FORMAT_RGBA16_UNORM;
+        let texel = [1u8, 0, 0xfe, 0xff, 0, 0x80, 0xff, 0xff];
+        let (bytes, layout) = load_tight_linear_rgba_with(
+            1,
+            1,
+            1,
+            format,
+            NativeUploads::ALL,
+            "normalized16_regression",
+            |dst| {
+                dst.copy_from_slice(&texel);
+                true
+            },
+        )
+        .expect("native normalized sixteen-bit texel");
+        assert_eq!(bytes, texel);
+        assert_eq!(
+            layout,
+            SampledByteFormat::from_source(TexelLayout::Rgba16Unorm, format)
+        );
+        assert_eq!(
+            linear_native_upload_format(format, NativeUploads::BGRA8),
+            None
+        );
+        assert!(native_bind_is_host_gated(format));
+    }
 
     /// View compatibility is a whole storage grid, which is what lets a
     /// compressed texture past this gate at all.

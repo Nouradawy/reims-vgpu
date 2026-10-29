@@ -51,9 +51,9 @@ use crate::{
     backend_name, device_console_feed, device_create, device_cursor_glyph_copy,
     device_cursor_glyph_info, device_destroy, device_drain, device_efi_console_copy,
     device_gfx_read, device_gfx_write, device_iosfc_read, device_iosfc_write, device_poll,
-    device_pop_action, device_reset, device_scanout_copy, device_scanout_may_paint, device_vbl_due_us,
-    device_window_run_main, device_window_set_early_fb, device_window_start, device_window_stop,
-    unwind_safe, ConsoleFeed, CursorGlyphInfo,
+    device_pop_action, device_reset, device_scanout_copy, device_scanout_may_paint,
+    device_vbl_due_us, device_window_run_main, device_window_set_early_fb, device_window_start,
+    device_window_stop, unwind_safe, ConsoleFeed, CursorGlyphInfo,
 };
 use std::os::raw::{c_char, c_int};
 use std::slice;
@@ -160,7 +160,8 @@ fn copy_host_ops(ops: *const ReimsVgpuHostOps) -> Option<ReimsVgpuHostOps> {
                 set_wp_fallback: None,
                 ..unsafe { std::mem::zeroed() }
             };
-            let copy_bytes = (ops.struct_size as usize).min(std::mem::size_of::<ReimsVgpuHostOps>());
+            let copy_bytes =
+                (ops.struct_size as usize).min(std::mem::size_of::<ReimsVgpuHostOps>());
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     ops as *const _ as *const u8,

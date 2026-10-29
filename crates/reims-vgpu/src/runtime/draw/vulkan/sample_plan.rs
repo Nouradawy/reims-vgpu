@@ -213,17 +213,41 @@ pub(super) fn surface_top<M: HostOps>(
     // Every rung under this one reads the guest's own pages, so a
     // serve this rung refuses is corrected below it rather than
     // held: the ladder takes the permissive standard.
-    let persistent_gpu_on = crate::config::read(crate::config::LAB_IOSURFACE_PERSISTENT_GPU).0 == crate::config::Switch::On;
-    let is_gpu_auth = persistent_gpu_on && crate::runtime::iosurface_registry::shadow::with_shadow(|reg| {
-        reg.query_state(mid, 0) == crate::runtime::iosurface_registry::PlaneState::GpuAuthoritative
-    }).unwrap_or(false);
+    let persistent_gpu_on = crate::config::read(crate::config::LAB_IOSURFACE_PERSISTENT_GPU).0
+        == crate::config::Switch::On;
+    let is_gpu_auth = persistent_gpu_on
+        && crate::runtime::iosurface_registry::shadow::with_shadow(|reg| {
+            reg.query_state(mid, 0)
+                == crate::runtime::iosurface_registry::PlaneState::GpuAuthoritative
+        })
+        .unwrap_or(false);
 
-    let guest_replaced = if is_gpu_auth {
-        crate::runtime::iosurface_registry::census::note_persistent_gpu_hit();
-        false
+    // `GpuAuthoritative` says where the last device Store landed; it is not a
+    // witness that the guest has not subsequently repainted the IOSurface.
+    // In particular, SpringBoard updates its settled icon snapshots with CPU
+    // stores between the animated and resting composites.  Letting the
+    // residency state replace the currency answer holds the old resident for
+    // the resting frame, which is visible as correct colours while swiping and
+    // stale/wrong channels after the gesture settles.
+    //
+    // The normal sampled-cache rungs have their own corroboration and retain
+    // the permissive rule.  A Phase-5 resident is the terminal copy for this
+    // mapping, so a `NoStamp` (the witness was never armed) is not evidence it
+    // still matches guest RAM.  Reuse that resident only after a watched-clean
+    // verdict; otherwise drop to the existing guest seed/reseed path.
+    let currency_standard = if is_gpu_auth {
+        CurrencyStandard::WatchedAndUnwritten
     } else {
-        !currency.serves(CurrencyStandard::NoContraryEvidence)
+        CurrencyStandard::NoContraryEvidence
     };
+    let guest_replaced = !currency.serves(currency_standard);
+    if is_gpu_auth {
+        if guest_replaced {
+            crate::runtime::iosurface_registry::census::note_persistent_gpu_fallback();
+        } else {
+            crate::runtime::iosurface_registry::census::note_persistent_gpu_hit();
+        }
+    }
     let resident_ready = resident_backing != ResidentContentBacking::NotReady;
     // A ready resident target is authoritative after a product
     // Store — but only while nothing has replaced the bytes it is a
@@ -2392,7 +2416,11 @@ pub(crate) fn plan_mapper_ref_memo<M: HostMemory + HostOps>(
     // The serial rung's byte order (`lab_memo_bgra`), so a plan and the serial
     // fill it stands in for agree on what the memo holds.
     let bgra = super::lab_memo_bgra();
-    let want_layout = if bgra { TexelLayout::Bgra8 } else { TexelLayout::Rgba8 };
+    let want_layout = if bgra {
+        TexelLayout::Bgra8
+    } else {
+        TexelLayout::Rgba8
+    };
     let serve = match state.mapper_ref_texture_memo.peek(&key) {
         Some(entry) if entry.native[..] == native[..] && entry.layout == want_layout => {
             MemoServe::Hit {
@@ -2756,7 +2784,6 @@ pub(crate) fn predict_ref_view_plan<M: HostMemory + HostOps>(
     Ok(wrap(source(None, plan.gather.predicted())))
 }
 
-
 /// TEMP (lab, DRAW_PAR): [`commit_linear_plan`]'s validation and predicted
 /// serve over a shared state; see [`predict_ref_view_plan`].
 pub(crate) fn predict_linear_plan<M: HostMemory + HostOps>(
@@ -2868,9 +2895,11 @@ pub(crate) fn predict_linear_plan<M: HostMemory + HostOps>(
     }
     let gather = plan.gather.as_ref().expect("checked above");
     let run = plan.witness_run.expect("the gather arm carries its run");
-    Ok(wrap_linear(plan, plan.source(guest_runs, Some(gather.predicted()))))
+    Ok(wrap_linear(
+        plan,
+        plan.source(guest_runs, Some(gather.predicted())),
+    ))
 }
-
 
 /// TEMP (lab, DRAW_PAR): [`commit_mapper_ref_plan`]'s validation and predicted
 /// serve over a shared state; see [`predict_ref_view_plan`].
@@ -2930,7 +2959,10 @@ pub(crate) fn predict_mapper_ref_plan<M: HostMemory + HostOps>(
     }) {
         return Err(SampleInvalid::Window);
     }
-    Ok(wrap_mapper(plan, plan.source(None, plan.gather.predicted())))
+    Ok(wrap_mapper(
+        plan,
+        plan.source(None, plan.gather.predicted()),
+    ))
 }
 
 #[cfg(test)]
@@ -3288,8 +3320,7 @@ mod tests {
         crate::runtime::gather_witness::GatherVouch,
     ) {
         let (w, h, mid, src) = served;
-        let SampledSourceRequest::GuestRuns(source, layout, format, _, identity, vouch, _, _) =
-            src
+        let SampledSourceRequest::GuestRuns(source, layout, format, _, identity, vouch, _, _) = src
         else {
             panic!("expected a guest-run serve")
         };

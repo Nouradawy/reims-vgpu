@@ -377,7 +377,10 @@ pub(crate) fn lab_publish_note() {
     let now = std::time::Instant::now();
     let mut g = LAB_PUBLISH.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(last) = g.0.replace(now) {
-        let us = now.duration_since(last).as_micros().min(u128::from(u32::MAX)) as u32;
+        let us = now
+            .duration_since(last)
+            .as_micros()
+            .min(u128::from(u32::MAX)) as u32;
         g.1.push(us);
     }
 }
@@ -388,7 +391,10 @@ pub(crate) fn lab_present_after_publish() {
     let now = std::time::Instant::now();
     let mut g = LAB_PUBLISH.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(last) = g.0 {
-        let us = now.duration_since(last).as_micros().min(u128::from(u32::MAX)) as u32;
+        let us = now
+            .duration_since(last)
+            .as_micros()
+            .min(u128::from(u32::MAX)) as u32;
         g.2.push(us);
     }
 }
@@ -511,7 +517,10 @@ fn guest_resize_request(
     incoming: (u32, u32),
     window: (u32, u32),
 ) -> bool {
-    mode == WindowMode::Sized && observed != Some(incoming) && incoming != window && !lab_fixed_window()
+    mode == WindowMode::Sized
+        && observed != Some(incoming)
+        && incoming != window
+        && !lab_fixed_window()
 }
 
 /// TEMP (lab, `REIMS_VGPU_LAB_FIXED_WINDOW=1`): the window keeps the size it
@@ -522,7 +531,12 @@ fn lab_fixed_window() -> bool {
         return false;
     }
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| matches!(std::env::var("REIMS_VGPU_LAB_FIXED_WINDOW").as_deref(), Ok("1" | "on")))
+    *ON.get_or_init(|| {
+        matches!(
+            std::env::var("REIMS_VGPU_LAB_FIXED_WINDOW").as_deref(),
+            Ok("1" | "on")
+        )
+    })
 }
 
 /// How a `Resized` event answers an outstanding guest-driven request, or
@@ -1390,7 +1404,8 @@ fn lab_host_present_note(took: std::time::Duration) {
         return;
     }
     let mut acc = ACC.lock().unwrap_or_else(|e| e.into_inner());
-    acc.1.push(took.as_micros().min(u128::from(u32::MAX)) as u32);
+    acc.1
+        .push(took.as_micros().min(u128::from(u32::MAX)) as u32);
     let started = *acc.0.get_or_insert_with(std::time::Instant::now);
     if started.elapsed() < std::time::Duration::from_secs(1) {
         return;
@@ -2534,11 +2549,11 @@ mod tests {
 
 #[cfg(target_os = "windows")]
 mod win32_drag {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
     use crate::backend::Backend as _;
     use crate::host_window::present::{window_cpu_frame, FrameSlot};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
 
     type HWND = isize;
     type UINT = u32;
@@ -2584,7 +2599,10 @@ mod win32_drag {
     #[link(name = "kernel32")]
     extern "system" {
         fn LoadLibraryA(lpLibFileName: *const u8) -> *mut std::ffi::c_void;
-        fn GetProcAddress(hModule: *mut std::ffi::c_void, lpProcName: *const u8) -> *mut std::ffi::c_void;
+        fn GetProcAddress(
+            hModule: *mut std::ffi::c_void,
+            lpProcName: *const u8,
+        ) -> *mut std::ffi::c_void;
     }
 
     #[link(name = "user32")]
@@ -2629,9 +2647,8 @@ mod win32_drag {
         uid: UintPtr,
         ref_data: DwordPtr,
     ) -> LRESULT {
-        let fallback = |h, m, w, l| {
-            comctl().map_or(0, |c| unsafe { (c.def_subclass_proc)(h, m, w, l) })
-        };
+        let fallback =
+            |h, m, w, l| comctl().map_or(0, |c| unsafe { (c.def_subclass_proc)(h, m, w, l) });
 
         if ref_data == 0 {
             return fallback(hwnd, msg, wparam, lparam);
@@ -2655,16 +2672,14 @@ mod win32_drag {
                 unsafe { KillTimer(hwnd, DRAG_TIMER_ID) };
                 present_latest_frame(state);
             }
-            WM_NCDESTROY => {
-                unsafe {
-                    KillTimer(hwnd, DRAG_TIMER_ID);
-                    if let Some(c) = comctl() {
-                        (c.remove_window_subclass)(hwnd, drag_subclass_proc, uid);
-                    }
-                    drop(Box::from_raw(ref_data as *mut DragHookState));
-                    return fallback(hwnd, msg, wparam, lparam);
+            WM_NCDESTROY => unsafe {
+                KillTimer(hwnd, DRAG_TIMER_ID);
+                if let Some(c) = comctl() {
+                    (c.remove_window_subclass)(hwnd, drag_subclass_proc, uid);
                 }
-            }
+                drop(Box::from_raw(ref_data as *mut DragHookState));
+                return fallback(hwnd, msg, wparam, lparam);
+            },
             _ => {}
         }
 
@@ -2676,7 +2691,12 @@ mod win32_drag {
             if let Some(frame) = guard.as_ref() {
                 let seq = frame.seq;
                 let prev = state.last_presented_seq.load(Ordering::Acquire);
-                if seq != prev && state.last_presented_seq.compare_exchange(prev, seq, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                if seq != prev
+                    && state
+                        .last_presented_seq
+                        .compare_exchange(prev, seq, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                {
                     let cpu_frame = window_cpu_frame(frame);
                     let resident = frame.resident.as_ref();
                     let _ = crate::backend::selected().window_present(resident, Some(cpu_frame));
@@ -2691,7 +2711,9 @@ mod win32_drag {
         last_presented: Arc<AtomicU64>,
     ) {
         let Some(c) = comctl() else {
-            crate::observe::fail("win32_drag_hook_unavailable reason=comctl32_subclass_entry_points_missing");
+            crate::observe::fail(
+                "win32_drag_hook_unavailable reason=comctl32_subclass_entry_points_missing",
+            );
             return;
         };
         if let Ok(handle) = window.window_handle() {
@@ -2702,11 +2724,15 @@ mod win32_drag {
                     last_presented_seq: last_presented,
                 });
                 let ref_data = Box::into_raw(state) as DwordPtr;
-                let ok = unsafe { (c.set_window_subclass)(hwnd, drag_subclass_proc, SUBCLASS_ID, ref_data) };
+                let ok = unsafe {
+                    (c.set_window_subclass)(hwnd, drag_subclass_proc, SUBCLASS_ID, ref_data)
+                };
                 if ok == 0 {
                     // Not installed: the box is ours again.
                     drop(unsafe { Box::from_raw(ref_data as *mut DragHookState) });
-                    crate::observe::fail("win32_drag_hook_unavailable reason=set_window_subclass_failed");
+                    crate::observe::fail(
+                        "win32_drag_hook_unavailable reason=set_window_subclass_failed",
+                    );
                 } else {
                     crate::observe::off("win32_drag_hook_installed");
                 }

@@ -230,8 +230,14 @@ fn decide() -> bool {
     let mut buf = [0u16; 8];
     // SAFETY: both buffers are ours and sized as passed.
     let n = unsafe { GetEnvironmentVariableW(name.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
-    let off = n == 3 && buf[0] == u16::from(b'o') && buf[1] == u16::from(b'f') && buf[2] == u16::from(b'f');
-    let big = n == 3 && buf[0] == u16::from(b'b') && buf[1] == u16::from(b'i') && buf[2] == u16::from(b'g');
+    let off = n == 3
+        && buf[0] == u16::from(b'o')
+        && buf[1] == u16::from(b'f')
+        && buf[2] == u16::from(b'f');
+    let big = n == 3
+        && buf[0] == u16::from(b'b')
+        && buf[1] == u16::from(b'i')
+        && buf[2] == u16::from(b'g');
     LIMIT.store(if big { MAX_BIG } else { MAX_SMALL }, Ordering::Relaxed);
     const LNAME: &[u8] = b"REIMS_VGPU_LAB_LCACHE\0";
     let mut lname = [0u16; 32];
@@ -240,8 +246,12 @@ fn decide() -> bool {
     }
     let mut lbuf = [0u16; 8];
     // SAFETY: both buffers are ours and sized as passed.
-    let ln = unsafe { GetEnvironmentVariableW(lname.as_ptr(), lbuf.as_mut_ptr(), lbuf.len() as u32) };
-    let loff = ln == 3 && lbuf[0] == u16::from(b'o') && lbuf[1] == u16::from(b'f') && lbuf[2] == u16::from(b'f');
+    let ln =
+        unsafe { GetEnvironmentVariableW(lname.as_ptr(), lbuf.as_mut_ptr(), lbuf.len() as u32) };
+    let loff = ln == 3
+        && lbuf[0] == u16::from(b'o')
+        && lbuf[1] == u16::from(b'f')
+        && lbuf[2] == u16::from(b'f');
     LARGE_ON.store(u8::from(!off && !loff), Ordering::Relaxed);
     const DNAME: &[u8] = b"REIMS_VGPU_LAB_DEPOT\0";
     let mut dname = [0u16; 32];
@@ -250,8 +260,12 @@ fn decide() -> bool {
     }
     let mut dbuf = [0u16; 8];
     // SAFETY: both buffers are ours and sized as passed.
-    let dn = unsafe { GetEnvironmentVariableW(dname.as_ptr(), dbuf.as_mut_ptr(), dbuf.len() as u32) };
-    let doff = dn == 3 && dbuf[0] == u16::from(b'o') && dbuf[1] == u16::from(b'f') && dbuf[2] == u16::from(b'f');
+    let dn =
+        unsafe { GetEnvironmentVariableW(dname.as_ptr(), dbuf.as_mut_ptr(), dbuf.len() as u32) };
+    let doff = dn == 3
+        && dbuf[0] == u16::from(b'o')
+        && dbuf[1] == u16::from(b'f')
+        && dbuf[2] == u16::from(b'f');
     DEPOT_ON.store(u8::from(!off && !doff), Ordering::Relaxed);
     let mut on = !off;
     if on {
@@ -264,7 +278,12 @@ fn decide() -> bool {
         }
     }
     // A racing first allocation may have decided already; the first answer stands.
-    match MODE.compare_exchange(0, if on { 1 } else { 2 }, Ordering::AcqRel, Ordering::Acquire) {
+    match MODE.compare_exchange(
+        0,
+        if on { 1 } else { 2 },
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
         Ok(_) => on,
         Err(m) => m == 1,
     }
@@ -295,7 +314,11 @@ fn cache() -> *mut Cache {
 fn new_cache(idx: u32) -> *mut Cache {
     // SAFETY: a zeroed `Cache` is valid (null heads, zero counts).
     unsafe {
-        let c = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, core::mem::size_of::<Cache>()) as *mut Cache;
+        let c = HeapAlloc(
+            GetProcessHeap(),
+            HEAP_ZERO_MEMORY,
+            core::mem::size_of::<Cache>(),
+        ) as *mut Cache;
         if !c.is_null() {
             TlsSetValue(idx, c.cast());
         }
@@ -511,7 +534,9 @@ unsafe impl GlobalAlloc for ThreadCache {
             }
             let c = class_of(layout.size());
             let cache = cache();
-            if !cache.is_null() && (*cache).counts[c] >= class_cap(c) && class_cap(c) >= 2
+            if !cache.is_null()
+                && (*cache).counts[c] >= class_cap(c)
+                && class_cap(c) >= 2
                 && DEPOT_ON.load(Ordering::Relaxed) == 1
             {
                 // Full: the older half of the list (the blocks past its first
@@ -626,7 +651,10 @@ mod tests {
         for size in 0..=MAX_BIG {
             let c = class_of(size);
             assert!(CLASS_SIZES[c] >= size, "size {size} class {c}");
-            assert!(c == 0 || CLASS_SIZES[c - 1] < size, "size {size} class {c} not the smallest");
+            assert!(
+                c == 0 || CLASS_SIZES[c - 1] < size,
+                "size {size} class {c} not the smallest"
+            );
         }
     }
 
@@ -645,7 +673,9 @@ mod tests {
             // Same bucket: the freed block comes back, and zeroed when asked.
             let z = a.alloc_zeroed(Layout::from_size_align(5120 * 2160 * 4 - 100, 16).unwrap());
             assert!(!z.is_null());
-            assert!((0..5120 * 2160 * 4 - 100).step_by(4093).all(|i| *z.add(i) == 0));
+            assert!((0..5120 * 2160 * 4 - 100)
+                .step_by(4093)
+                .all(|i| *z.add(i) == 0));
             // Growing within the bucket keeps the block; past it moves the bytes.
             let zl = Layout::from_size_align(5120 * 2160 * 4 - 100, 16).unwrap();
             *z = 7;

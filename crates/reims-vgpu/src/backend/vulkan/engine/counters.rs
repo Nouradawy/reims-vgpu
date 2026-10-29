@@ -1513,7 +1513,11 @@ pub(crate) mod lab_site {
     static SITES: std::sync::Mutex<Option<std::collections::HashMap<Key, (u64, u64)>>> =
         std::sync::Mutex::new(None);
 
-    pub(crate) fn note(kind: &'static str, site: &'static std::panic::Location<'static>, bytes: u64) {
+    pub(crate) fn note(
+        kind: &'static str,
+        site: &'static std::panic::Location<'static>,
+        bytes: u64,
+    ) {
         let mut g = SITES.lock().unwrap_or_else(|e| e.into_inner());
         let e = g
             .get_or_insert_with(std::collections::HashMap::new)
@@ -1532,7 +1536,12 @@ pub(crate) mod lab_site {
         for ((kind, file, ln), (n, bytes)) in rows.iter().take(24) {
             use std::fmt::Write as _;
             let short = file.rsplit(['/', '\\']).take(2).collect::<Vec<_>>();
-            let _ = write!(line, " {kind}@{}/{}:{ln}={n}:{bytes}", short.get(1).unwrap_or(&""), short[0]);
+            let _ = write!(
+                line,
+                " {kind}@{}/{}:{ln}={n}:{bytes}",
+                short.get(1).unwrap_or(&""),
+                short[0]
+            );
         }
         Some(line)
     }

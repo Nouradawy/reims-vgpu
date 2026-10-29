@@ -599,7 +599,8 @@ impl Backend for VulkanBackend {
         host: &mut M,
         pending: &mut Box<dyn std::any::Any + Send + Sync>,
     ) -> Option<bool> {
-        let d = pending.downcast_mut::<crate::runtime::render_writeback::vulkan::DeferredStore>()?;
+        let d =
+            pending.downcast_mut::<crate::runtime::render_writeback::vulkan::DeferredStore>()?;
         let identity = d.identity.clone();
         let paid = crate::runtime::render_writeback::vulkan::advance_render_frame(state, host, d)?;
         if !paid {

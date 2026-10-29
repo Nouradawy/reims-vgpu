@@ -1185,6 +1185,62 @@ fn stage_texture_ref_texture_ref_resolves_surface_mapping() {
     ));
 }
 
+#[test]
+fn mapped_compute_sampling_preserves_srgb_while_storage_keeps_raw_bytes() {
+    use crate::protocol::iosurface_pages::{PAGE_ENTRY_PFN_SHIFT, PAGE_ENTRY_VALID};
+    use crate::protocol::pixel_format as pf;
+    for format in [
+        pf::MTL_FORMAT_RGBA8_UNORM_SRGB,
+        pf::MTL_FORMAT_BGRA8_UNORM_SRGB,
+    ] {
+        for is_storage in [false, true] {
+            let mut state = DeviceState::new(DeviceId(1), PAGE_SHIFT_ARM64E);
+            let mut host = FakeHost::new();
+            gva_mem::define_task_pages_arm64e(&mut host, &mut state, 4, 8);
+            assert!(state.set_object_list(1, 0, 32));
+            let pfn = 0x20u32;
+            host.map_range((pfn as u64) << PAGE_SHIFT_ARM64E, 0x4000, 0x5a);
+            assert!(state.map_surface(3));
+            {
+                let m = state.mappings.get_mut(&3).unwrap();
+                m.mapped = true;
+                m.mapping_internal = 1;
+                m.page_entries = vec![(pfn << PAGE_ENTRY_PFN_SHIFT) | PAGE_ENTRY_VALID];
+            }
+            assert!(state.set_mapping_geom(3, 4, 4, format));
+            let desc_gva = 6u64 << PAGE_SHIFT_ARM64E;
+            let desc = RefTextureBuilder::new(3, 0, 0, 0).with_len(16);
+            write_task_gva_arm64e(&mut host, &state.tasks[1], desc_gva, desc.bytes());
+            let mut entry = [0u8; OBJECT_LIST_ENTRY_LEN];
+            st32(
+                &mut entry,
+                objects::OBJECT_TYPE_REF_TEXTURE as u32 | (16 << 8),
+            );
+            entry[4..12].copy_from_slice(&desc_gva.to_le_bytes());
+            let off = list_object_entry_offset(10, 32).unwrap();
+            write_task_gva_arm64e(&mut host, &state.tasks[1], off, &entry);
+            let staged =
+                stage_texture_raw::<NeutralStage, _>(&mut state, &mut host, 1, 10, 32, is_storage)
+                    .unwrap();
+            let expected = if is_storage { format - 1 } else { format };
+            assert_eq!(staged.pixel_format, expected);
+            assert_eq!(staged.bytes, vec![0x5a; 64]);
+            #[cfg(feature = "backend-vulkan")]
+            {
+                let staged = stage_texture_raw::<VulkanStage, _>(
+                    &mut state, &mut host, 1, 10, 32, is_storage,
+                )
+                .unwrap();
+                assert_eq!(
+                    staged.pixel_format, format,
+                    "Vulkan must keep sRGB until the sampled view or storage transfer resolves it"
+                );
+                assert_eq!(staged.bytes, vec![0x5a; 64]);
+            }
+        }
+    }
+}
+
 /// A ref-texture record is the exact Metal view, even when its single-plane
 /// backing already has valid base geometry. Live pipe 5 exposes each row
 /// of a 1920-wide BGRA8 surface as a 480-wide RGBA32Uint view so one
@@ -3598,12 +3654,12 @@ fn compute_sampled_formats_admit_srgb_xr_and_native_formats() {
     // 0x5a (RGB10A2), 0x5e (BGR10A2), and 0x0a (R8Unorm)
     assert_eq!(
         mtl_to_engine_sampled(pf::MTL_FORMAT_BGRA8_UNORM_SRGB),
-        Some(StorageImageFormat::Bgra8Unorm),
+        Some(StorageImageFormat::Bgra8Srgb),
         "0x51 (BGRA8Unorm_sRGB) must be admitted for compute sampling"
     );
     assert_eq!(
         mtl_to_engine_sampled(pf::MTL_FORMAT_RGBA8_UNORM_SRGB),
-        Some(StorageImageFormat::Rgba8Unorm),
+        Some(StorageImageFormat::Rgba8Srgb),
         "0x47 (RGBA8Unorm_sRGB) must be admitted for compute sampling"
     );
     assert_eq!(
@@ -3676,7 +3732,12 @@ fn compute_dst_mapper_ref_texture_on_no_backend_import_routes_to_copied_fallback
     };
 
     let before_fallback = store_route_count("compute.dst_mapper.copied_fallback");
-    let dest = direct_destination(&mut state, &mut host, &staged_tex, vk::Format::R8G8B8A8_UNORM);
+    let dest = direct_destination(
+        &mut state,
+        &mut host,
+        &staged_tex,
+        vk::Format::R8G8B8A8_UNORM,
+    );
 
     assert!(
         matches!(dest, ComputeImageDestination::Host),
@@ -3688,6 +3749,3 @@ fn compute_dst_mapper_ref_texture_on_no_backend_import_routes_to_copied_fallback
         "compute.dst_mapper.copied_fallback counter must be incremented"
     );
 }
-
-
-

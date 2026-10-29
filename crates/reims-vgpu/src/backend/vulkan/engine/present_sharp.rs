@@ -27,7 +27,12 @@ use super::present_sharp_shader::{PRESENT_SHARP_FRAG_SPIRV, PRESENT_SHARP_VERT_S
 /// `REIMS_VGPU_LAB_PRESENT_SHARP=on`. Latched.
 pub(crate) fn on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| matches!(std::env::var("REIMS_VGPU_LAB_PRESENT_SHARP").as_deref(), Ok("on" | "1")))
+    *ON.get_or_init(|| {
+        matches!(
+            std::env::var("REIMS_VGPU_LAB_PRESENT_SHARP").as_deref(),
+            Ok("on" | "1")
+        )
+    })
 }
 
 pub(crate) struct PresentSharp {
@@ -76,7 +81,12 @@ impl PresentSharp {
         Ok(made)
     }
 
-    unsafe fn build(&mut self, device: &ash::Device, format: vk::Format, frames: usize) -> Result<(), vk::Result> {
+    unsafe fn build(
+        &mut self,
+        device: &ash::Device,
+        format: vk::Format,
+        frames: usize,
+    ) -> Result<(), vk::Result> {
         let attachment = [vk::AttachmentDescription::default()
             .format(format)
             .samples(vk::SampleCountFlags::TYPE_1)
@@ -354,7 +364,14 @@ impl PresentSharp {
                 },
             }],
         );
-        device.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[set], &[]);
+        device.cmd_bind_descriptor_sets(
+            cmd,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.layout,
+            0,
+            &[set],
+            &[],
+        );
         let size = [src.width as f32, src.height as f32];
         let mut bytes = [0u8; 8];
         bytes[..4].copy_from_slice(&size[0].to_le_bytes());

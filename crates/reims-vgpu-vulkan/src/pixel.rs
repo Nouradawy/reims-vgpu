@@ -888,6 +888,9 @@ pub enum StorageImageFormat {
     Rgba8Sint,
     Rgba8Unorm,
     Bgra8Unorm,
+    /// Sampled-only sRGB views; the transfer function must survive compute staging.
+    Rgba8Srgb,
+    Bgra8Srgb,
     Rg16Float,
     R8Unorm,
     /// Metal `A8Unorm`: one byte, presenting `(0, 0, 0, a)`.
@@ -1006,6 +1009,8 @@ impl StorageImageFormat {
             | Self::Rgba8Sint
             | Self::Rgba8Unorm
             | Self::Bgra8Unorm
+            | Self::Rgba8Srgb
+            | Self::Bgra8Srgb
             | Self::R32Uint
             | Self::R32Sint
             | Self::R32Float
@@ -1207,8 +1212,8 @@ pub fn sampled_image(mtl: u16) -> Result<StorageImageFormat, Refusal> {
         pf::MTL_FORMAT_RGB10A2_UNORM => StorageImageFormat::Rgb10a2Unorm,
         pf::MTL_FORMAT_BGR10A2_UNORM => StorageImageFormat::Bgr10a2Unorm,
         pf::MTL_FORMAT_RG11B10_FLOAT => StorageImageFormat::Rg11b10Float,
-        pf::MTL_FORMAT_BGRA8_UNORM_SRGB => StorageImageFormat::Bgra8Unorm,
-        pf::MTL_FORMAT_RGBA8_UNORM_SRGB => StorageImageFormat::Rgba8Unorm,
+        pf::MTL_FORMAT_BGRA8_UNORM_SRGB => StorageImageFormat::Bgra8Srgb,
+        pf::MTL_FORMAT_RGBA8_UNORM_SRGB => StorageImageFormat::Rgba8Srgb,
         _ => return storage_image(mtl),
     };
     translate(mtl)?;
@@ -1226,6 +1231,8 @@ pub fn vk_storage_image(format: StorageImageFormat) -> vk::Format {
         StorageImageFormat::Rgba8Sint => vk::Format::R8G8B8A8_SINT,
         StorageImageFormat::Rgba8Unorm => vk::Format::R8G8B8A8_UNORM,
         StorageImageFormat::Bgra8Unorm => vk::Format::B8G8R8A8_UNORM,
+        StorageImageFormat::Rgba8Srgb => vk::Format::R8G8B8A8_SRGB,
+        StorageImageFormat::Bgra8Srgb => vk::Format::B8G8R8A8_SRGB,
         StorageImageFormat::Rg16Float => vk::Format::R16G16_SFLOAT,
         StorageImageFormat::Rg16Uint => vk::Format::R16G16_UINT,
         StorageImageFormat::R8Unorm => vk::Format::R8_UNORM,
@@ -1273,6 +1280,24 @@ pub fn storage_image_components(format: StorageImageFormat) -> SwizzlePlan {
 mod tests {
     use super::*;
     use reims_vgpu_core::pixel_format as p;
+
+    #[test]
+    fn compute_sampled_srgb_keeps_decode_and_stored_byte_order() {
+        use reims_vgpu_core::pixel_format as pf;
+        for (mtl, expected) in [
+            (pf::MTL_FORMAT_RGBA8_UNORM_SRGB, vk::Format::R8G8B8A8_SRGB),
+            (pf::MTL_FORMAT_BGRA8_UNORM_SRGB, vk::Format::B8G8R8A8_SRGB),
+        ] {
+            let sampled = sampled_image(mtl).unwrap();
+            assert_eq!(sampled.vk_format(), expected);
+            assert_eq!(sampled.bytes_per_texel(), 4);
+            assert!(storage_image(mtl).is_err());
+            assert_eq!(
+                storage_image_components(sampled),
+                translate(mtl).unwrap().components
+            );
+        }
+    }
 
     /// Every `MTLPixelFormat` the table accepts, ascending. `EXPECTED` is the
     /// literal list and `expected_names_every_format_the_table_translates`
@@ -2201,6 +2226,24 @@ mod tests {
                 word,
                 "{mtl:#x} compute sampled image"
             );
+        }
+    }
+
+    #[test]
+    fn normalized16_render_and_transfer_keep_the_sampled_native_word() {
+        for (mtl, word, bytes) in [
+            (p::MTL_FORMAT_R16_UNORM, vk::Format::R16_UNORM, 2),
+            (
+                p::MTL_FORMAT_RGBA16_UNORM,
+                vk::Format::R16G16B16A16_UNORM,
+                8,
+            ),
+        ] {
+            assert_eq!(color_attachment(mtl), Ok((word, ColorNumericType::Float)));
+            assert_eq!(verbatim_texel(mtl), Some((word, bytes)));
+            let sampled = sampled_pixels(mtl).expect("native normalized sample");
+            assert_eq!(vk_texel_layout(sampled.layout), word);
+            assert!(sampled.layout.render_target_index().is_some());
         }
     }
 

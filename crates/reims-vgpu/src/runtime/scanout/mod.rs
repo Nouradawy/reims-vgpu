@@ -324,7 +324,8 @@ pub fn capture_present_frame(
     // looked like it was answering.
     crate::observe::when_verbose(|| {
         let (nz, maxb, rgb_nz, max_rgb, px0) = crate::observe::bgra_present_stats(&buf);
-        crate::observe::verbose(|| format!(
+        crate::observe::verbose(|| {
+            format!(
             "present_capture mid={mapping_id} {width}x{height} gen={generation} src={src} host_cache={} rgb_nz={rgb_nz} max_rgb={max_rgb} byte_nz={nz} byte_max={maxb} px0=[{},{},{},{}] present_mapping={} frame_mapping={} frame_flush={}",
             from_host_cache as u8,
             px0[0],
@@ -334,7 +335,8 @@ pub fn capture_present_frame(
             state.present.present_mapping,
             state.present.frame_mapping,
             state.present.frame_flush_seen as u8,
-        ));
+        )
+        });
     });
     // Publish the new frame and recycle the old retain buffer as the next
     // capture scratch (warm 8 MiB alloc, no per-present malloc/free/zero).
@@ -483,14 +485,18 @@ pub fn copy_to_bgra8<M: HostMemory + crate::runtime::host::HostOps>(
             crate::observe::when_verbose(|| {
                 let (nz, maxb, rgb_nz, max_rgb, px0) =
                     crate::observe::bgra_present_stats(&state.present.frame_bgra);
-                crate::observe::verbose(|| format!(
+                crate::observe::verbose(|| {
+                    format!(
                     "scanout paint_snapshot mid={} (action mid={} gen={}) {}x{} retain_gen={} nz={} max={}",
                     shown_mid, mapping_id, expected_generation, width, height, shown_gen, nz, maxb
-                ));
-                crate::observe::verbose(|| format!(
+                )
+                });
+                crate::observe::verbose(|| {
+                    format!(
                     "present_paint Painted mid={shown_mid} (action mid={mapping_id} gen={expected_generation}) {width}x{height} rgb_nz={rgb_nz} max_rgb={max_rgb} px0=[{},{},{},{}] (this is what QMP shows)",
                     px0[0], px0[1], px0[2], px0[3]
-                ));
+                )
+                });
             });
             state.present.valid = true;
             state.present.width = width;
@@ -569,10 +575,12 @@ pub fn copy_to_bgra8<M: HostMemory + crate::runtime::host::HostOps>(
             .saturating_mul(4);
         let sample = &dst[..need.min(dst.len())];
         let (nz, maxb) = crate::observe::nonzero_stats(sample);
-        crate::observe::verbose(|| format!(
-            "scanout paint_mapping ok mid={} {}x{} gen={} nz={} max={}",
-            mapping_id, width, height, expected_generation, nz, maxb
-        ));
+        crate::observe::verbose(|| {
+            format!(
+                "scanout paint_mapping ok mid={} {}x{} gen={} nz={} max={}",
+                mapping_id, width, height, expected_generation, nz, maxb
+            )
+        });
         state.present.valid = true;
         state.present.width = width;
         state.present.height = height;
@@ -1241,10 +1249,12 @@ pub fn note_front_buffer_writeback<M: HostMemory + crate::runtime::host::HostOps
         state.present.early_front_mapping = mapping_id;
     }
 
-    crate::observe::verbose(|| format!(
+    crate::observe::verbose(|| {
+        format!(
         "front_wb LATCH mid={mapping_id} {paint_w}x{paint_h} gen={gen} fmt={fmt:#x} early_front={} (pre-boundary early paint enqueue)",
         state.present.early_front_mapping
-    ));
+    )
+    });
     host.enqueue(HostAction::scanout_gen(mapping_id, paint_w, paint_h, gen));
 }
 
@@ -1416,7 +1426,11 @@ pub fn lab_gpx_all() -> &'static [(u32, u32, u32)] {
             .filter_map(|p| {
                 let (mid, xy) = p.split_once(':')?;
                 let (x, y) = xy.split_once(',')?;
-                Some((mid.trim().parse().ok()?, x.trim().parse().ok()?, y.trim().parse().ok()?))
+                Some((
+                    mid.trim().parse().ok()?,
+                    x.trim().parse().ok()?,
+                    y.trim().parse().ok()?,
+                ))
             })
             .collect()
     })
@@ -1444,7 +1458,11 @@ fn lab_gpx<M: HostMemory>(
     if points.is_empty() || !points.iter().any(|(m, _, _)| *m == mapping_id) {
         return;
     }
-    let Some(entries) = state.mappings.get(&mapping_id).map(|m| m.page_entries.as_slice()) else {
+    let Some(entries) = state
+        .mappings
+        .get(&mapping_id)
+        .map(|m| m.page_entries.as_slice())
+    else {
         return;
     };
     let page = state.page_size();
@@ -1716,7 +1734,11 @@ pub fn note_sampled_surface_field_window<M: HostMemory + crate::runtime::host::H
         return;
     }
     let page_shift = state.page_shift;
-    let Some(entries) = state.mappings.get(&mapping_id).map(|m| m.page_entries.as_slice()) else {
+    let Some(entries) = state
+        .mappings
+        .get(&mapping_id)
+        .map(|m| m.page_entries.as_slice())
+    else {
         return;
     };
     let page = state.page_size();
@@ -1728,9 +1750,10 @@ pub fn note_sampled_surface_field_window<M: HostMemory + crate::runtime::host::H
             .and_then(|&e| crate::protocol::iosurface_pages::entry_gpa_shift(e, page_shift))
             .map(|gpa| gpa + off % page)
     };
-    if !entries.iter().any(|&e| {
-        crate::protocol::iosurface_pages::entry_gpa_shift(e, page_shift).is_some()
-    }) {
+    if !entries
+        .iter()
+        .any(|&e| crate::protocol::iosurface_pages::entry_gpa_shift(e, page_shift).is_some())
+    {
         return;
     }
     let read = bpp.min(4) as usize;

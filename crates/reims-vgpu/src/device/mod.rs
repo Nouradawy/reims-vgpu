@@ -208,7 +208,8 @@ fn apply_gfx_write(inner: &mut DeviceInner, slot: &BoundDevice, write: QueuedGfx
 /// for it by that holder: 1 gfx read, 2 MMIO write, 3 vCPU iosfc, 4 heartbeat poll,
 /// 5 action pop, 6 console feed, 7 display surface, 8 scanout copy, 9 cursor info,
 /// 10 cursor copy.
-pub(crate) static LAB_INNER_HOLDER: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+pub(crate) static LAB_INNER_HOLDER: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
 const LAB_HOLDERS: usize = 11;
 static LAB_LOCK_WAIT_US: [std::sync::atomic::AtomicU64; LAB_HOLDERS] =
     [const { std::sync::atomic::AtomicU64::new(0) }; LAB_HOLDERS];
@@ -358,13 +359,17 @@ struct DrainGuard<'a> {
 impl std::ops::Deref for DrainGuard<'_> {
     type Target = DeviceInner;
     fn deref(&self) -> &DeviceInner {
-        self.inner.as_ref().expect("DrainGuard holds inner until drop")
+        self.inner
+            .as_ref()
+            .expect("DrainGuard holds inner until drop")
     }
 }
 
 impl std::ops::DerefMut for DrainGuard<'_> {
     fn deref_mut(&mut self) -> &mut DeviceInner {
-        self.inner.as_mut().expect("DrainGuard holds inner until drop")
+        self.inner
+            .as_mut()
+            .expect("DrainGuard holds inner until drop")
     }
 }
 
@@ -741,7 +746,10 @@ fn cursor_lockfree_enabled() -> bool {
         }
         let on = matches!(state, crate::config::Switch::On);
         eprintln!("reims-cursor: lockfree {}", if on { "on" } else { "off" });
-        crate::observe::off(format!("reims_cursor lockfree={}", if on { "on" } else { "off" }));
+        crate::observe::off(format!(
+            "reims_cursor lockfree={}",
+            if on { "on" } else { "off" }
+        ));
         on
     })
 }
@@ -808,7 +816,10 @@ fn lock_free_cursor_doorbell(
     drop(host);
     // Neither action this body queues is a device-lock action; anything that
     // landed in the scratch queue would be one, and would be lost here.
-    debug_assert!(scratch.is_empty(), "cursor doorbell queued a lock-owning action");
+    debug_assert!(
+        scratch.is_empty(),
+        "cursor doorbell queued a lock-owning action"
+    );
     Ok(())
 }
 
@@ -925,7 +936,12 @@ pub fn device_drain(id: u64) -> bool {
     // TEMP (lab, TIMERS): the census phase timers follow the live switch.
     crate::lab_clock::refresh_timers();
     crate::runtime::drain::lab_act(1); // TEMP (lab)
-    device.drain(&mut host);
+    {
+        // TEMP (lab, REIMS_VGPU_LAB_DRAW_TIMERS): draw-path spans count on this
+        // thread only inside the tranche. Inert when the switch is off.
+        let _draw_timers = crate::runtime::draw_timers::drain_scope();
+        device.drain(&mut host);
+    }
     // TEMP (lab, REIMS_VGPU_LAB_IRQ_BATCH): the gfx pulse held for this tranche.
     host.flush_deferred_irqs();
     // TEMP (lab, REIMS_VGPU_LAB_EARLY_PUBLISH, on by default): the finished frame
@@ -1199,7 +1215,12 @@ pub fn device_poll(id: u64) -> bool {
     }
     drop(host);
     drop(d);
-    lab_poll_parts([lab_t1, lab_t2 - lab_t1, lab_t3 - lab_t2, lab_t.elapsed() - lab_t3]);
+    lab_poll_parts([
+        lab_t1,
+        lab_t2 - lab_t1,
+        lab_t3 - lab_t2,
+        lab_t.elapsed() - lab_t3,
+    ]);
     // Census both source polls and the independently time-gated VBL rate.
     // Drive bounded maintenance from the poll heartbeat, which ticks even when
     // the guest stops publishing. The wall clock returns already-dead resources
@@ -1423,7 +1444,9 @@ fn lab_poll_yield() -> bool {
 /// `REIMS_VGPU_LAB_POLL_SPIN_US`, default 0 (parks at once, as before):
 /// b043 - spinning up to 1 ms did not lower the drain's total wait.
 fn lab_poll_spin_us() -> u64 {
-    if let Some(n) = crate::runtime::lab_live::value("POLL_SPIN_US").and_then(|v| v.trim().parse::<u64>().ok()) {
+    if let Some(n) =
+        crate::runtime::lab_live::value("POLL_SPIN_US").and_then(|v| v.trim().parse::<u64>().ok())
+    {
         return n.min(5000);
     }
     static N: std::sync::OnceLock<u64> = std::sync::OnceLock::new();

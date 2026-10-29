@@ -849,11 +849,27 @@ impl ResourcePools {
         format: vk::Format,
         counters: &EngineCounters,
     ) -> Result<Option<vk::ImageView>, DrawError> {
-        let Some(slot) = self.registry.get(identity) else {
+        let Some(format) = self.registry_sample_format(identity, format) else {
             return Ok(None);
         };
-        let format = translate::pixel::sample_view_format(format, slot.format.declared());
         unsafe { self.registry_view(ctx, identity, format, counters) }
+    }
+
+    /// The format a sampled view of `identity` must use for a particular bind.
+    ///
+    /// This is public to the engine rather than reconstructed at individual
+    /// callers because a copied resident must retain the very same transfer
+    /// interpretation as a direct resident view. In particular, a linear
+    /// `TexelLayout` request over an sRGB resident is sampled as sRGB; making a
+    /// scratch image from the request alone would silently drop that decode.
+    pub(crate) fn registry_sample_format(
+        &self,
+        identity: &TargetIdentity,
+        requested: vk::Format,
+    ) -> Option<vk::Format> {
+        self.registry
+            .get(identity)
+            .map(|slot| translate::pixel::sample_view_format(requested, slot.format.declared()))
     }
 
     /// The view over this resident's allocation in exactly `format`, created and
@@ -902,7 +918,9 @@ impl ResourcePools {
             return Ok(None);
         }
         let (image, access) = (slot.image, slot.access);
-        let Some(view) = (unsafe { self.registry_view(ctx, identity, resident.declared(), counters)? }) else {
+        let Some(view) =
+            (unsafe { self.registry_view(ctx, identity, resident.declared(), counters)? })
+        else {
             return Ok(None);
         };
         Ok(Some((image, view, access)))
@@ -5862,15 +5880,38 @@ fn view_texel_bytes(format: vk::Format) -> Option<u32> {
     use vk::Format as F;
     Some(match format {
         F::R8_UNORM | F::R8_SNORM | F::R8_UINT | F::R8_SINT | F::R8_SRGB => 1,
-        F::R8G8_UNORM | F::R8G8_SNORM | F::R8G8_UINT | F::R8G8_SINT | F::R16_UNORM
-        | F::R16_SFLOAT | F::R16_UINT | F::R16_SINT => 2,
-        F::R8G8B8A8_UNORM | F::R8G8B8A8_SRGB | F::R8G8B8A8_UINT | F::R8G8B8A8_SINT
-        | F::R8G8B8A8_SNORM | F::B8G8R8A8_UNORM | F::B8G8R8A8_SRGB
-        | F::A2B10G10R10_UNORM_PACK32 | F::A2R10G10B10_UNORM_PACK32
-        | F::B10G11R11_UFLOAT_PACK32 | F::R32_SFLOAT | F::R32_UINT | F::R32_SINT
-        | F::R16G16_UNORM | F::R16G16_SFLOAT | F::R16G16_UINT | F::R16G16_SINT => 4,
-        F::R16G16B16A16_SFLOAT | F::R16G16B16A16_UNORM | F::R16G16B16A16_UINT
-        | F::R16G16B16A16_SINT | F::R32G32_SFLOAT | F::R32G32_UINT | F::R32G32_SINT => 8,
+        F::R8G8_UNORM
+        | F::R8G8_SNORM
+        | F::R8G8_UINT
+        | F::R8G8_SINT
+        | F::R16_UNORM
+        | F::R16_SFLOAT
+        | F::R16_UINT
+        | F::R16_SINT => 2,
+        F::R8G8B8A8_UNORM
+        | F::R8G8B8A8_SRGB
+        | F::R8G8B8A8_UINT
+        | F::R8G8B8A8_SINT
+        | F::R8G8B8A8_SNORM
+        | F::B8G8R8A8_UNORM
+        | F::B8G8R8A8_SRGB
+        | F::A2B10G10R10_UNORM_PACK32
+        | F::A2R10G10B10_UNORM_PACK32
+        | F::B10G11R11_UFLOAT_PACK32
+        | F::R32_SFLOAT
+        | F::R32_UINT
+        | F::R32_SINT
+        | F::R16G16_UNORM
+        | F::R16G16_SFLOAT
+        | F::R16G16_UINT
+        | F::R16G16_SINT => 4,
+        F::R16G16B16A16_SFLOAT
+        | F::R16G16B16A16_UNORM
+        | F::R16G16B16A16_UINT
+        | F::R16G16B16A16_SINT
+        | F::R32G32_SFLOAT
+        | F::R32G32_UINT
+        | F::R32G32_SINT => 8,
         F::R32G32B32A32_SFLOAT | F::R32G32B32A32_UINT | F::R32G32B32A32_SINT => 16,
         _ => return None,
     })
@@ -5893,15 +5934,27 @@ mod view_format_tests {
     #[test]
     fn a_resident_view_keeps_the_allocation_texel_size() {
         // p055: a B8G8R8A8 view over an R8 resident reads four times its memory.
-        assert!(!view_texel_size_agrees(vk::Format::R8_UNORM, vk::Format::B8G8R8A8_UNORM));
+        assert!(!view_texel_size_agrees(
+            vk::Format::R8_UNORM,
+            vk::Format::B8G8R8A8_UNORM
+        ));
         assert!(!view_texel_size_agrees(
             vk::Format::B8G8R8A8_UNORM,
             vk::Format::R16G16B16A16_SFLOAT
         ));
         // The reinterpretations a mutable-format resident exists for.
-        assert!(view_texel_size_agrees(vk::Format::B8G8R8A8_UNORM, vk::Format::B8G8R8A8_SRGB));
-        assert!(view_texel_size_agrees(vk::Format::B8G8R8A8_UNORM, vk::Format::R8G8B8A8_UNORM));
+        assert!(view_texel_size_agrees(
+            vk::Format::B8G8R8A8_UNORM,
+            vk::Format::B8G8R8A8_SRGB
+        ));
+        assert!(view_texel_size_agrees(
+            vk::Format::B8G8R8A8_UNORM,
+            vk::Format::R8G8B8A8_UNORM
+        ));
         // A format the table cannot size stays the driver's question.
-        assert!(view_texel_size_agrees(vk::Format::R8_UNORM, vk::Format::BC1_RGBA_UNORM_BLOCK));
+        assert!(view_texel_size_agrees(
+            vk::Format::R8_UNORM,
+            vk::Format::BC1_RGBA_UNORM_BLOCK
+        ));
     }
 }

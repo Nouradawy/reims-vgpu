@@ -114,9 +114,9 @@
 //! and threading a commit through every `?` is the one thing guaranteed to go
 //! stale.
 
+use crate::lab_clock::LabInstant as Instant;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
-use crate::lab_clock::LabInstant as Instant;
 
 use crate::observe::phase_clock::{charge_ns, to_us};
 

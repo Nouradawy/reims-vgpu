@@ -410,6 +410,8 @@ pub fn resolve<M: HostMemory + HostOps>(
     task_id: u32,
     pipeline_ref: u32,
 ) -> Result<Arc<ResolvedRenderPipeline>, DrawPreparationDecline> {
+    // TEMP (lab, REIMS_VGPU_LAB_DRAW_TIMERS)
+    let _dt = crate::runtime::draw_timers::span(crate::runtime::draw_timers::Bucket::Pipeline);
     if !memo_enabled() {
         note_store_route("pipe_memo_off");
         return resolve_uncached(state, host, task_id, pipeline_ref)
